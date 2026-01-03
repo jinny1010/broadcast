@@ -278,7 +278,7 @@ async function broadcastMessage(message, autoHide) {
         try {
             // 1. 채팅으로 전환
             await switchToChat(chatInfo);
-            await sleep(1500); // 채팅 로드 대기
+            await sleep(3000); // 채팅 로드 대기 (넉넉하게)
             
             // 2. 메시지 전송 전 현재 메시지 개수 기록
             const msgCountBefore = getContext().chat.length;
@@ -304,9 +304,9 @@ async function broadcastMessage(message, autoHide) {
             successCount++;
             toastr.success(`${successCount}/${totalCount} 완료: ${chatInfo.name}`);
             
-            // 6. 다음 캐릭터로 넘어가기 전 잠시 대기
+            // 6. 다음 캐릭터로 넘어가기 전 딜레이
             if (i < selectedChats.length - 1) {
-                await sleep(1000);
+                await sleep(2000);
             }
             
         } catch (error) {

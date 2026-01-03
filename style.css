@@ -10,17 +10,13 @@
 }
 
 /* 팝업 버튼 스타일 */
-.popup-button-ok,
-.popup-button-cancel {
-    min-width: 80px !important;
-    padding: 8px 20px !important;
-}
-
-/* 팝업 버튼 컨테이너 */
-.popup-controls {
-    display: flex !important;
-    gap: 10px !important;
-    justify-content: center !important;
+#dialogue_popup_ok,
+#dialogue_popup_cancel,
+.dialogue_popup_ok,
+.dialogue_popup_cancel {
+    min-width: 100px !important;
+    padding: 10px 24px !important;
+    margin: 0 5px !important;
 }
 
 .broadcast-modal {
