@@ -6,9 +6,11 @@ import {
     eventSource,
     event_types,
     chat,
+    saveChatDebounced,
 } from '../../../../script.js';
 
 import { extension_settings } from '../../../extensions.js';
+import { callPopup } from '../../../popup.js';
 
 const extensionName = 'broadcast-message';
 
@@ -92,65 +94,45 @@ async function openChatSelector() {
         return;
     }
     
-    const modalHtml = `
-        <div id="broadcast-modal" class="broadcast-modal">
-            <div class="broadcast-modal-content">
-                <h3>📢 브로드캐스트 메시지</h3>
-                
-                <div class="broadcast-chat-list">
-                    <div class="broadcast-select-all">
-                        <label>
-                            <input type="checkbox" id="broadcast-select-all">
-                            <span>전체 선택</span>
-                        </label>
-                    </div>
-                    <div id="broadcast-chats-container">
-                        ${chats.map((chatItem, index) => `
-                            <div class="broadcast-chat-item">
-                                <label>
-                                    <input type="checkbox" 
-                                           class="broadcast-chat-checkbox" 
-                                           data-index="${index}"
-                                           data-chid="${chatItem.chid || ''}"
-                                           data-grid="${chatItem.grid || ''}"
-                                           data-name="${chatItem.name}"
-                                           data-is-group="${chatItem.isGroup || false}">
-                                    <span>${chatItem.isGroup ? '👥 ' : ''}${chatItem.name}</span>
-                                </label>
-                            </div>
-                        `).join('')}
-                    </div>
-                </div>
-                
-                <div class="broadcast-message-input">
-                    <label for="broadcast-message">보낼 메시지:</label>
-                    <textarea id="broadcast-message" rows="4" placeholder="여러 캐릭터에게 보낼 메시지를 입력하세요..."></textarea>
-                </div>
-                
-                <div class="broadcast-options">
-                    <label>
-                        <input type="checkbox" id="broadcast-auto-hide" ${extension_settings[extensionName].autoHide ? 'checked' : ''}>
-                        <span>보낸 메시지와 응답 자동 숨김</span>
+    const popupContent = `
+        <div style="display:flex; flex-direction:column; gap:15px; min-width:400px;">
+            <h3 style="margin:0; text-align:center;">📢 브로드캐스트 메시지</h3>
+            
+            <div style="max-height:200px; overflow-y:auto; border:1px solid #444; border-radius:5px; padding:10px;">
+                <label style="display:flex; align-items:center; gap:8px; padding:5px; cursor:pointer; border-bottom:1px solid #444; margin-bottom:10px;">
+                    <input type="checkbox" id="broadcast-select-all" style="width:18px; height:18px;">
+                    <span style="font-weight:bold;">전체 선택</span>
+                </label>
+                ${chats.map((chatItem, index) => `
+                    <label style="display:flex; align-items:center; gap:8px; padding:5px; cursor:pointer;">
+                        <input type="checkbox" 
+                               class="broadcast-chat-checkbox" 
+                               data-index="${index}"
+                               data-chid="${chatItem.chid || ''}"
+                               data-grid="${chatItem.grid || ''}"
+                               data-name="${chatItem.name}"
+                               data-is-group="${chatItem.isGroup || false}"
+                               style="width:18px; height:18px;">
+                        <span>${chatItem.isGroup ? '👥 ' : ''}${chatItem.name}</span>
                     </label>
-                </div>
-                
-                <div class="broadcast-actions">
-                    <button id="broadcast-cancel" class="menu_button">취소</button>
-                    <button id="broadcast-send" class="menu_button">전송</button>
-                </div>
+                `).join('')}
             </div>
+            
+            <div>
+                <label style="display:block; margin-bottom:5px;">보낼 메시지:</label>
+                <textarea id="broadcast-message" rows="3" style="width:100%; padding:8px; border-radius:5px; border:1px solid #444; background:#1a1a2e; color:#fff; resize:vertical;" placeholder="여러 캐릭터에게 보낼 메시지를 입력하세요..."></textarea>
+            </div>
+            
+            <label style="display:flex; align-items:center; gap:8px; cursor:pointer;">
+                <input type="checkbox" id="broadcast-auto-hide" ${extension_settings[extensionName].autoHide ? 'checked' : ''} style="width:18px; height:18px;">
+                <span>보낸 메시지와 응답 자동 숨김</span>
+            </label>
         </div>
     `;
     
-    $('body').append(modalHtml);
+    const result = await callPopup(popupContent, 'confirm', '', { okButton: '전송', cancelButton: '취소' });
     
-    $('#broadcast-select-all').on('change', function() {
-        $('.broadcast-chat-checkbox').prop('checked', this.checked);
-    });
-    
-    $('#broadcast-cancel').on('click', closeChatSelector);
-    
-    $('#broadcast-send').on('click', async function() {
+    if (result) {
         const message = $('#broadcast-message').val().trim();
         const autoHide = $('#broadcast-auto-hide').is(':checked');
         
@@ -177,49 +159,35 @@ async function openChatSelector() {
         extension_settings[extensionName].autoHide = autoHide;
         saveSettingsDebounced();
         
-        closeChatSelector();
         await broadcastMessage(message, autoHide);
+    }
+    
+    // 전체 선택 이벤트 (팝업 열릴 때)
+    $(document).off('change', '#broadcast-select-all').on('change', '#broadcast-select-all', function() {
+        $('.broadcast-chat-checkbox').prop('checked', this.checked);
     });
-}
-
-/**
- * 채팅 선택 UI 닫기
- */
-function closeChatSelector() {
-    $('#broadcast-modal').remove();
 }
 
 /**
  * 하이드 개수 입력 모달 열기
  */
-function openHideModal() {
-    const modalHtml = `
-        <div id="hide-modal" class="broadcast-modal">
-            <div class="broadcast-modal-content" style="max-width: 300px;">
-                <h3>🙈 메시지 숨기기</h3>
-                
-                <div class="broadcast-message-input">
-                    <label for="hide-count">숨길 메시지 개수:</label>
-                    <input type="number" id="hide-count" min="1" max="100" value="2" 
-                           style="width: 100%; padding: 10px; border-radius: 5px; border: 1px solid var(--SmartThemeBorderColor, #444); background: var(--SmartThemeBlurTintColor, #0d0d1a); color: var(--SmartThemeBodyColor, #fff);">
-                    <small style="color: #888; margin-top: 5px; display: block;">마지막 메시지부터 숨깁니다</small>
-                </div>
-                
-                <div class="broadcast-actions">
-                    <button id="hide-cancel" class="menu_button">취소</button>
-                    <button id="hide-confirm" class="menu_button">숨기기</button>
-                </div>
+async function openHideModal() {
+    const popupContent = `
+        <div style="display:flex; flex-direction:column; gap:15px; min-width:300px;">
+            <h3 style="margin:0; text-align:center;">🙈 메시지 숨기기</h3>
+            
+            <div>
+                <label style="display:block; margin-bottom:5px;">숨길 메시지 개수:</label>
+                <input type="number" id="hide-count" min="1" max="100" value="2" 
+                       style="width:100%; padding:10px; border-radius:5px; border:1px solid #444; background:#1a1a2e; color:#fff; font-size:16px;">
+                <small style="color:#888; margin-top:5px; display:block;">마지막 메시지부터 숨깁니다</small>
             </div>
         </div>
     `;
     
-    $('body').append(modalHtml);
+    const result = await callPopup(popupContent, 'confirm', '', { okButton: '숨기기', cancelButton: '취소' });
     
-    $('#hide-count').focus().select();
-    
-    $('#hide-cancel').on('click', () => $('#hide-modal').remove());
-    
-    $('#hide-confirm').on('click', async function() {
+    if (result) {
         const count = parseInt($('#hide-count').val(), 10);
         
         if (isNaN(count) || count < 1) {
@@ -227,16 +195,8 @@ function openHideModal() {
             return;
         }
         
-        $('#hide-modal').remove();
         await hideLastMessages(count);
-    });
-    
-    // Enter 키로 확인
-    $('#hide-count').on('keypress', function(e) {
-        if (e.which === 13) {
-            $('#hide-confirm').click();
-        }
-    });
+    }
 }
 
 /**
@@ -277,9 +237,12 @@ async function hideMessageByIndex(index) {
             // UI 업데이트
             const messageElement = $(`#chat .mes[mesid="${index}"]`);
             if (messageElement.length) {
-                messageElement.addClass('hidden-message');
                 messageElement.attr('is_hidden', 'true');
+                messageElement.hide(); // 바로 숨기기
             }
+            
+            // 채팅 저장
+            saveChatDebounced();
         }
     } catch (error) {
         console.error('[Broadcast] Error hiding message:', error);
