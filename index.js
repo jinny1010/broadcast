@@ -11,8 +11,10 @@ import {
 
 import { extension_settings } from '../../../extensions.js';
 
-// SillyTavern context에서 callPopup 가져오기
-const getCallPopup = () => SillyTavern.getContext().callPopup;
+// SillyTavern context에서 함수들 가져오기
+const getContext = () => SillyTavern.getContext();
+const getCallPopup = () => getContext().callPopup;
+const executeSlashCommands = (cmd) => getContext().executeSlashCommands(cmd);
 
 const extensionName = 'broadcast-message';
 
@@ -205,7 +207,8 @@ async function openHideModal() {
  * 마지막 N개 메시지 숨기기 (/hide 명령어 사용)
  */
 async function hideLastMessages(count) {
-    const totalMessages = chat.length;
+    const currentChat = getContext().chat;
+    const totalMessages = currentChat.length;
     
     if (totalMessages === 0) {
         toastr.info('숨길 메시지가 없습니다.');
@@ -218,27 +221,9 @@ async function hideLastMessages(count) {
     
     toastr.info(`마지막 ${hideCount}개 메시지를 숨기는 중...`);
     
-    // /hide 명령어 실행: /hide 시작인덱스-끝인덱스
-    const hideCommand = `/hide ${startIndex}-${lastIndex}`;
-    
     try {
-        // 슬래시 명령어 실행
-        const textarea = $('#send_textarea');
-        const originalValue = textarea.val();
-        textarea.val(hideCommand);
-        
-        // Enter 키 이벤트로 명령어 실행
-        const enterEvent = new KeyboardEvent('keydown', {
-            key: 'Enter',
-            code: 'Enter',
-            keyCode: 13,
-            which: 13,
-            bubbles: true
-        });
-        textarea[0].dispatchEvent(enterEvent);
-        
-        await sleep(500);
-        
+        // executeSlashCommands로 /hide 실행
+        await executeSlashCommands(`/hide ${startIndex}-${lastIndex}`);
         toastr.success(`${hideCount}개 메시지를 숨겼습니다.`);
     } catch (error) {
         console.error('[Broadcast] Error hiding messages:', error);
@@ -271,7 +256,7 @@ async function hideMessageByIndex(index) {
 }
 
 /**
- * 메시지 브로드캐스트 실행 (백그라운드에서 진행)
+ * 메시지 브로드캐스트 실행 (순차적으로 응답 완료 후 다음 진행)
  */
 async function broadcastMessage(message, autoHide) {
     if (isProcessing) {
@@ -280,7 +265,6 @@ async function broadcastMessage(message, autoHide) {
     }
     
     isProcessing = true;
-    const delay = extension_settings[extensionName].delayBetweenChats;
     const totalCount = selectedChats.length;
     
     toastr.info(`${totalCount}명에게 메시지 전송을 시작합니다...`);
@@ -294,39 +278,36 @@ async function broadcastMessage(message, autoHide) {
         try {
             // 1. 채팅으로 전환
             await switchToChat(chatInfo);
-            await sleep(1500); // 채팅 로드 대기 충분히
+            await sleep(1500); // 채팅 로드 대기
             
-            // 2. 메시지 전송
-            await sendMessage(message);
+            // 2. 메시지 전송 전 현재 메시지 개수 기록
+            const msgCountBefore = getContext().chat.length;
             
-            // 3. 응답 대기
+            // 3. 메시지 전송
+            $('#send_textarea').val(message);
+            $('#send_but').trigger('click');
+            
+            // 4. 응답 완료 대기 (생성 중 표시가 사라질 때까지)
             await waitForResponse();
             
-            // 4. 자동 숨김
+            // 5. 응답 완료 후 숨기기
             if (autoHide) {
-                await sleep(500);
-                const totalMessages = chat.length;
-                if (totalMessages >= 2) {
-                    const hideCommand = `/hide ${totalMessages - 2}-${totalMessages - 1}`;
-                    $('#send_textarea').val(hideCommand);
-                    const enterEvent = new KeyboardEvent('keydown', {
-                        key: 'Enter',
-                        code: 'Enter', 
-                        keyCode: 13,
-                        which: 13,
-                        bubbles: true
-                    });
-                    $('#send_textarea')[0].dispatchEvent(enterEvent);
-                    await sleep(500);
+                await sleep(300);
+                const msgCountAfter = getContext().chat.length;
+                // 새로 추가된 메시지들 (보낸 것 + 응답) 숨기기
+                if (msgCountAfter > msgCountBefore) {
+                    const hideStart = msgCountBefore;
+                    const hideEnd = msgCountAfter - 1;
+                    await executeSlashCommands(`/hide ${hideStart}-${hideEnd}`);
                 }
             }
             
             successCount++;
             toastr.success(`${successCount}/${totalCount} 완료: ${chatInfo.name}`);
             
-            // 다음 캐릭터 전에 딜레이
+            // 6. 다음 캐릭터로 넘어가기 전 잠시 대기
             if (i < selectedChats.length - 1) {
-                await sleep(delay);
+                await sleep(1000);
             }
             
         } catch (error) {
@@ -378,21 +359,36 @@ async function sendMessage(message) {
 }
 
 /**
- * 응답 대기
+ * 응답 대기 (생성 완료될 때까지)
  */
 function waitForResponse() {
     return new Promise((resolve) => {
-        const checkInterval = setInterval(() => {
-            if (!$('#send_but').hasClass('disabled') && !$('.mes_generating').length) {
-                clearInterval(checkInterval);
-                resolve();
+        // 먼저 생성이 시작될 때까지 대기
+        const waitForStart = setInterval(() => {
+            if ($('#mes_stop').is(':visible') || $('.mes_generating').length > 0) {
+                clearInterval(waitForStart);
+                
+                // 생성이 끝날 때까지 대기
+                const waitForEnd = setInterval(() => {
+                    if (!$('#mes_stop').is(':visible') && $('.mes_generating').length === 0) {
+                        clearInterval(waitForEnd);
+                        resolve();
+                    }
+                }, 300);
+                
+                // 타임아웃 (3분)
+                setTimeout(() => {
+                    clearInterval(waitForEnd);
+                    resolve();
+                }, 180000);
             }
-        }, 500);
+        }, 100);
         
+        // 시작 대기 타임아웃 (10초 - 시작 안 하면 그냥 진행)
         setTimeout(() => {
-            clearInterval(checkInterval);
+            clearInterval(waitForStart);
             resolve();
-        }, 60000);
+        }, 10000);
     });
 }
 
