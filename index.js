@@ -5,7 +5,6 @@ import {
     saveSettingsDebounced,
     eventSource,
     event_types,
-    getRequestHeaders,
     chat,
 } from '../../../../script.js';
 
@@ -38,25 +37,43 @@ function loadSettings() {
 }
 
 /**
- * 채팅 목록 가져오기
+ * 캐릭터 목록 가져오기 (DOM에서 직접 읽기)
  */
 async function getChatList() {
-    try {
-        const response = await fetch('/api/chats/all', {
-            method: 'POST',
-            headers: getRequestHeaders(),
-            body: JSON.stringify({}),
-        });
+    const characters = [];
+    
+    // 캐릭터 목록에서 가져오기
+    $('.character_select').each(function() {
+        const $this = $(this);
+        const chid = $this.attr('chid');
+        const name = $this.find('.ch_name').text().trim();
+        const avatar = $this.find('img').attr('src') || '';
         
-        if (!response.ok) {
-            throw new Error('Failed to fetch chat list');
+        if (name) {
+            characters.push({
+                chid: chid,
+                name: name,
+                avatar: avatar,
+            });
         }
+    });
+    
+    // 그룹도 가져오기
+    $('.group_select').each(function() {
+        const $this = $(this);
+        const grid = $this.attr('grid');
+        const name = $this.find('.ch_name').text().trim();
         
-        return await response.json();
-    } catch (error) {
-        console.error('[Broadcast] Error fetching chat list:', error);
-        return [];
-    }
+        if (name) {
+            characters.push({
+                grid: grid,
+                name: name,
+                isGroup: true,
+            });
+        }
+    });
+    
+    return characters;
 }
 
 /**
@@ -71,7 +88,7 @@ async function openChatSelector() {
     const chats = await getChatList();
     
     if (chats.length === 0) {
-        toastr.info('사용 가능한 채팅이 없습니다.');
+        toastr.info('사용 가능한 캐릭터가 없습니다.');
         return;
     }
     
@@ -88,15 +105,17 @@ async function openChatSelector() {
                         </label>
                     </div>
                     <div id="broadcast-chats-container">
-                        ${chats.map((chat, index) => `
+                        ${chats.map((chatItem, index) => `
                             <div class="broadcast-chat-item">
                                 <label>
                                     <input type="checkbox" 
                                            class="broadcast-chat-checkbox" 
                                            data-index="${index}"
-                                           data-chat-id="${chat.file_name || chat.chat_id || index}"
-                                           data-character="${chat.character_name || chat.name || 'Unknown'}">
-                                    <span>${chat.character_name || chat.name || 'Unknown'} - ${chat.file_name || chat.chat_id || ''}</span>
+                                           data-chid="${chatItem.chid || ''}"
+                                           data-grid="${chatItem.grid || ''}"
+                                           data-name="${chatItem.name}"
+                                           data-is-group="${chatItem.isGroup || false}">
+                                    <span>${chatItem.isGroup ? '👥 ' : ''}${chatItem.name}</span>
                                 </label>
                             </div>
                         `).join('')}
@@ -105,7 +124,7 @@ async function openChatSelector() {
                 
                 <div class="broadcast-message-input">
                     <label for="broadcast-message">보낼 메시지:</label>
-                    <textarea id="broadcast-message" rows="4" placeholder="여러 채팅에 보낼 메시지를 입력하세요..."></textarea>
+                    <textarea id="broadcast-message" rows="4" placeholder="여러 캐릭터에게 보낼 메시지를 입력하세요..."></textarea>
                 </div>
                 
                 <div class="broadcast-options">
@@ -143,13 +162,15 @@ async function openChatSelector() {
         selectedChats = [];
         $('.broadcast-chat-checkbox:checked').each(function() {
             selectedChats.push({
-                chatId: $(this).data('chat-id'),
-                character: $(this).data('character'),
+                chid: $(this).data('chid'),
+                grid: $(this).data('grid'),
+                name: $(this).data('name'),
+                isGroup: $(this).data('is-group') === true || $(this).data('is-group') === 'true',
             });
         });
         
         if (selectedChats.length === 0) {
-            toastr.warning('최소 하나의 채팅을 선택해주세요.');
+            toastr.warning('최소 하나의 캐릭터를 선택해주세요.');
             return;
         }
         
@@ -277,19 +298,19 @@ async function broadcastMessage(message, autoHide) {
     isProcessing = true;
     const delay = extension_settings[extensionName].delayBetweenChats;
     
-    toastr.info(`${selectedChats.length}개의 채팅에 메시지를 전송합니다...`);
+    toastr.info(`${selectedChats.length}개의 캐릭터에게 메시지를 전송합니다...`);
     
     let successCount = 0;
     let failCount = 0;
     
     for (const chatInfo of selectedChats) {
         try {
-            await switchToChat(chatInfo.chatId, chatInfo.character);
+            await switchToChat(chatInfo);
             
             const currentMsgCount = $('#chat .mes').length;
             
             if (autoHide) {
-                pendingHide.set(chatInfo.chatId, {
+                pendingHide.set(chatInfo.name, {
                     startIndex: currentMsgCount,
                     waiting: true,
                 });
@@ -303,7 +324,7 @@ async function broadcastMessage(message, autoHide) {
                 await sleep(delay);
             }
         } catch (error) {
-            console.error(`[Broadcast] Failed to send to ${chatInfo.character}:`, error);
+            console.error(`[Broadcast] Failed to send to ${chatInfo.name}:`, error);
             failCount++;
         }
     }
@@ -315,14 +336,27 @@ async function broadcastMessage(message, autoHide) {
 /**
  * 채팅 전환
  */
-async function switchToChat(chatId, characterName) {
-    const characterElement = $(`.character_select[chid]`).filter(function() {
-        return $(this).find('.ch_name').text().trim() === characterName;
-    });
+async function switchToChat(chatInfo) {
+    let element;
     
-    if (characterElement.length > 0) {
-        characterElement.trigger('click');
-        await sleep(500);
+    if (chatInfo.isGroup && chatInfo.grid) {
+        // 그룹 선택
+        element = $(`.group_select[grid="${chatInfo.grid}"]`);
+    } else if (chatInfo.chid) {
+        // 캐릭터 선택
+        element = $(`.character_select[chid="${chatInfo.chid}"]`);
+    } else {
+        // 이름으로 찾기
+        element = $(`.character_select`).filter(function() {
+            return $(this).find('.ch_name').text().trim() === chatInfo.name;
+        });
+    }
+    
+    if (element && element.length > 0) {
+        element.trigger('click');
+        await sleep(1000); // 채팅 로드 대기
+    } else {
+        throw new Error(`Character not found: ${chatInfo.name}`);
     }
 }
 
@@ -397,86 +431,26 @@ function sleep(ms) {
  * 하단 버튼 영역에 버튼 추가
  */
 function addBottomButtons() {
-    // 버튼 HTML - 입력창 왼쪽 버튼 영역에 추가
-    const broadcastBtnHtml = `
-        <div id="broadcast-btn" class="fa-solid fa-bullhorn interactable" 
-             title="브로드캐스트" 
-             style="cursor: pointer; padding: 5px; font-size: 16px;"></div>
-    `;
+    // 기존 버튼 제거
+    $('#broadcast-buttons-container, #broadcast-floating-buttons').remove();
     
-    const hideBtnHtml = `
-        <div id="hide-btn" class="fa-solid fa-eye-slash interactable" 
-             title="메시지 숨기기" 
-             style="cursor: pointer; padding: 5px; font-size: 16px;"></div>
-    `;
-    
-    // 입력창 왼쪽 영역에 버튼 추가 (다양한 위치 시도)
-    const targetSelectors = [
-        '#leftSendForm',
-        '#send_form .send_form_buttons_left',
-        '#send_form',
-        '.send_form_buttons',
-        '#data_bank_wand_container',
-    ];
-    
-    let buttonsAdded = false;
-    
-    for (const selector of targetSelectors) {
-        const target = $(selector);
-        if (target.length > 0) {
-            // 컨테이너 생성
-            const container = $(`
-                <div id="broadcast-buttons-container" style="display: flex; gap: 5px; align-items: center; margin-right: 5px;">
-                    ${broadcastBtnHtml}
-                    ${hideBtnHtml}
-                </div>
-            `);
-            
-            if (selector === '#send_form') {
-                target.prepend(container);
-            } else {
-                target.append(container);
-            }
-            
-            buttonsAdded = true;
-            console.log('[Broadcast] Buttons added to:', selector);
-            break;
-        }
-    }
-    
-    // 버튼이 추가되지 않았다면 body에 플로팅 버튼으로 추가
-    if (!buttonsAdded) {
-        const floatingHtml = `
-            <div id="broadcast-floating-buttons" style="
-                position: fixed;
-                bottom: 80px;
-                left: 10px;
-                display: flex;
-                flex-direction: column;
-                gap: 10px;
-                z-index: 1000;
-            ">
-                <div id="broadcast-btn" class="fa-solid fa-bullhorn" 
-                     title="브로드캐스트" 
-                     style="cursor: pointer; padding: 10px; font-size: 18px; 
-                            background: var(--SmartThemeBlurTintColor, #333); 
-                            border-radius: 50%; 
-                            border: 1px solid var(--SmartThemeBorderColor, #444);"></div>
-                <div id="hide-btn" class="fa-solid fa-eye-slash" 
-                     title="메시지 숨기기" 
-                     style="cursor: pointer; padding: 10px; font-size: 18px; 
-                            background: var(--SmartThemeBlurTintColor, #333); 
-                            border-radius: 50%; 
-                            border: 1px solid var(--SmartThemeBorderColor, #444);"></div>
+    // 플로팅 버튼으로 추가 (우측 하단)
+    const floatingHtml = `
+        <div id="broadcast-floating-buttons">
+            <div id="broadcast-btn" title="브로드캐스트">
+                <i class="fa-solid fa-bullhorn"></i>
             </div>
-        `;
-        $('body').append(floatingHtml);
-        console.log('[Broadcast] Floating buttons added');
-    }
+            <div id="hide-btn" title="메시지 숨기기">
+                <i class="fa-solid fa-eye-slash"></i>
+            </div>
+        </div>
+    `;
+    
+    $('body').append(floatingHtml);
     
     // 이벤트 바인딩
-    $(document).on('click', '#broadcast-btn', openChatSelector);
-    $(document).on('click', '#hide-btn', openHideModal);
+    $('#broadcast-btn').on('click', openChatSelector);
+    $('#hide-btn').on('click', openHideModal);
 }
 
 /**
