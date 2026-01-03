@@ -428,29 +428,33 @@ function sleep(ms) {
 }
 
 /**
- * 하단 버튼 영역에 버튼 추가
+ * Extensions 메뉴에 버튼 추가
  */
 function addBottomButtons() {
     // 기존 버튼 제거
-    $('#broadcast-buttons-container, #broadcast-floating-buttons').remove();
+    $('#broadcast_wand_container').remove();
     
-    // 플로팅 버튼으로 추가 (우측 하단)
-    const floatingHtml = `
-        <div id="broadcast-floating-buttons">
-            <div id="broadcast-btn" title="브로드캐스트">
-                <i class="fa-solid fa-bullhorn"></i>
+    // Extensions 메뉴에 추가
+    const buttonHtml = `
+        <div id="broadcast_wand_container" class="extension_container interactable" tabindex="0">
+            <div id="broadcast-btn" class="list-group-item flex-container flexGap5 interactable" tabindex="0" role="listitem">
+                <div class="fa-solid fa-bullhorn extensionsMenuExtensionButton"></div>
+                <span>브로드캐스트</span>
             </div>
-            <div id="hide-btn" title="메시지 숨기기">
-                <i class="fa-solid fa-eye-slash"></i>
+            <div id="hide-btn" class="list-group-item flex-container flexGap5 interactable" tabindex="0" role="listitem">
+                <div class="fa-solid fa-eye-slash extensionsMenuExtensionButton"></div>
+                <span>메시지 숨기기</span>
             </div>
         </div>
     `;
     
-    $('body').append(floatingHtml);
+    $('#extensionsMenu').prepend(buttonHtml);
     
     // 이벤트 바인딩
     $('#broadcast-btn').on('click', openChatSelector);
     $('#hide-btn').on('click', openHideModal);
+    
+    console.log('[Broadcast] Buttons added to Extensions menu');
 }
 
 /**
