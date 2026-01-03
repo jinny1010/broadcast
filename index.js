@@ -6,25 +6,23 @@ import {
     eventSource,
     event_types,
     getRequestHeaders,
+    chat,
 } from '../../../../script.js';
 
 import { extension_settings } from '../../../extensions.js';
-import { SlashCommandParser } from '../../../slash-commands/SlashCommandParser.js';
-import { SlashCommand } from '../../../slash-commands/SlashCommand.js';
 
 const extensionName = 'broadcast-message';
-const extensionFolderPath = `scripts/extensions/third-party/${extensionName}`;
 
 // 기본 설정
 const defaultSettings = {
     autoHide: true,
-    delayBetweenChats: 2000, // 채팅 간 딜레이 (ms)
+    delayBetweenChats: 2000,
 };
 
 // 상태 관리
 let isProcessing = false;
 let selectedChats = [];
-let pendingHide = new Map(); // 숨김 대기 중인 메시지 추적
+let pendingHide = new Map();
 
 /**
  * 설정 초기화
@@ -41,7 +39,6 @@ function loadSettings() {
 
 /**
  * 채팅 목록 가져오기
- * @returns {Promise<Array>} 채팅 목록
  */
 async function getChatList() {
     try {
@@ -63,30 +60,6 @@ async function getChatList() {
 }
 
 /**
- * 특정 캐릭터의 채팅 목록 가져오기
- * @param {string} characterName 캐릭터 이름
- * @returns {Promise<Array>} 채팅 목록
- */
-async function getCharacterChats(characterName) {
-    try {
-        const response = await fetch('/api/characters/chats', {
-            method: 'POST',
-            headers: getRequestHeaders(),
-            body: JSON.stringify({ avatar_url: characterName }),
-        });
-        
-        if (!response.ok) {
-            throw new Error('Failed to fetch character chats');
-        }
-        
-        return await response.json();
-    } catch (error) {
-        console.error('[Broadcast] Error fetching character chats:', error);
-        return [];
-    }
-}
-
-/**
  * 채팅 선택 UI 열기
  */
 async function openChatSelector() {
@@ -102,7 +75,6 @@ async function openChatSelector() {
         return;
     }
     
-    // 모달 HTML 생성
     const modalHtml = `
         <div id="broadcast-modal" class="broadcast-modal">
             <div class="broadcast-modal-content">
@@ -151,10 +123,8 @@ async function openChatSelector() {
         </div>
     `;
     
-    // 모달 추가
     $('body').append(modalHtml);
     
-    // 이벤트 바인딩
     $('#broadcast-select-all').on('change', function() {
         $('.broadcast-chat-checkbox').prop('checked', this.checked);
     });
@@ -183,7 +153,6 @@ async function openChatSelector() {
             return;
         }
         
-        // 설정 저장
         extension_settings[extensionName].autoHide = autoHide;
         saveSettingsDebounced();
         
@@ -200,9 +169,104 @@ function closeChatSelector() {
 }
 
 /**
+ * 하이드 개수 입력 모달 열기
+ */
+function openHideModal() {
+    const modalHtml = `
+        <div id="hide-modal" class="broadcast-modal">
+            <div class="broadcast-modal-content" style="max-width: 300px;">
+                <h3>🙈 메시지 숨기기</h3>
+                
+                <div class="broadcast-message-input">
+                    <label for="hide-count">숨길 메시지 개수:</label>
+                    <input type="number" id="hide-count" min="1" max="100" value="2" 
+                           style="width: 100%; padding: 10px; border-radius: 5px; border: 1px solid var(--SmartThemeBorderColor, #444); background: var(--SmartThemeBlurTintColor, #0d0d1a); color: var(--SmartThemeBodyColor, #fff);">
+                    <small style="color: #888; margin-top: 5px; display: block;">마지막 메시지부터 숨깁니다</small>
+                </div>
+                
+                <div class="broadcast-actions">
+                    <button id="hide-cancel" class="menu_button">취소</button>
+                    <button id="hide-confirm" class="menu_button">숨기기</button>
+                </div>
+            </div>
+        </div>
+    `;
+    
+    $('body').append(modalHtml);
+    
+    $('#hide-count').focus().select();
+    
+    $('#hide-cancel').on('click', () => $('#hide-modal').remove());
+    
+    $('#hide-confirm').on('click', async function() {
+        const count = parseInt($('#hide-count').val(), 10);
+        
+        if (isNaN(count) || count < 1) {
+            toastr.warning('올바른 숫자를 입력해주세요.');
+            return;
+        }
+        
+        $('#hide-modal').remove();
+        await hideLastMessages(count);
+    });
+    
+    // Enter 키로 확인
+    $('#hide-count').on('keypress', function(e) {
+        if (e.which === 13) {
+            $('#hide-confirm').click();
+        }
+    });
+}
+
+/**
+ * 마지막 N개 메시지 숨기기
+ */
+async function hideLastMessages(count) {
+    const messages = $('#chat .mes:not(.hidden-message)');
+    const totalMessages = messages.length;
+    
+    if (totalMessages === 0) {
+        toastr.info('숨길 메시지가 없습니다.');
+        return;
+    }
+    
+    const hideCount = Math.min(count, totalMessages);
+    
+    toastr.info(`마지막 ${hideCount}개 메시지를 숨기는 중...`);
+    
+    // 마지막 메시지부터 역순으로 숨김
+    for (let i = 0; i < hideCount; i++) {
+        const msgIndex = totalMessages - 1 - i;
+        await hideMessageByIndex(msgIndex);
+        await sleep(100); // 약간의 딜레이
+    }
+    
+    toastr.success(`${hideCount}개 메시지를 숨겼습니다.`);
+}
+
+/**
+ * 인덱스로 메시지 숨기기
+ */
+async function hideMessageByIndex(index) {
+    try {
+        // chat 배열에서 해당 메시지의 is_hidden을 true로 설정
+        if (chat && chat[index]) {
+            chat[index].is_hidden = true;
+            
+            // UI 업데이트
+            const messageElement = $(`#chat .mes[mesid="${index}"]`);
+            if (messageElement.length) {
+                messageElement.addClass('hidden-message');
+                messageElement.attr('is_hidden', 'true');
+            }
+        }
+    } catch (error) {
+        console.error('[Broadcast] Error hiding message:', error);
+    }
+}
+
+/**
  * 메시지 브로드캐스트 실행
- * @param {string} message 보낼 메시지
- * @param {boolean} autoHide 자동 숨김 여부
  */
 async function broadcastMessage(message, autoHide) {
     if (isProcessing) {
@@ -218,33 +282,28 @@ async function broadcastMessage(message, autoHide) {
     let successCount = 0;
     let failCount = 0;
     
-    for (const chat of selectedChats) {
+    for (const chatInfo of selectedChats) {
         try {
-            // 1. 해당 채팅으로 전환
-            await switchToChat(chat.chatId, chat.character);
+            await switchToChat(chatInfo.chatId, chatInfo.character);
             
-            // 2. 현재 메시지 수 기록 (숨김 처리를 위해)
             const currentMsgCount = $('#chat .mes').length;
             
-            // 3. 자동 숨김 설정
             if (autoHide) {
-                pendingHide.set(chat.chatId, {
+                pendingHide.set(chatInfo.chatId, {
                     startIndex: currentMsgCount,
                     waiting: true,
                 });
             }
             
-            // 4. 메시지 전송
             await sendMessage(message);
             
             successCount++;
             
-            // 5. 다음 채팅 전 딜레이
-            if (selectedChats.indexOf(chat) < selectedChats.length - 1) {
+            if (selectedChats.indexOf(chatInfo) < selectedChats.length - 1) {
                 await sleep(delay);
             }
         } catch (error) {
-            console.error(`[Broadcast] Failed to send to ${chat.character}:`, error);
+            console.error(`[Broadcast] Failed to send to ${chatInfo.character}:`, error);
             failCount++;
         }
     }
@@ -255,38 +314,25 @@ async function broadcastMessage(message, autoHide) {
 
 /**
  * 채팅 전환
- * @param {string} chatId 채팅 ID
- * @param {string} characterName 캐릭터 이름
  */
 async function switchToChat(chatId, characterName) {
-    // SillyTavern의 채팅 전환 함수 호출
-    // 실제 구현은 SillyTavern 버전에 따라 다를 수 있음
-    
     const characterElement = $(`.character_select[chid]`).filter(function() {
         return $(this).find('.ch_name').text().trim() === characterName;
     });
     
     if (characterElement.length > 0) {
         characterElement.trigger('click');
-        await sleep(500); // 채팅 로드 대기
+        await sleep(500);
     }
-    
-    // 특정 채팅 파일 로드가 필요한 경우
-    // await loadChat(chatId);
 }
 
 /**
  * 메시지 전송
- * @param {string} message 메시지
  */
 async function sendMessage(message) {
     const textarea = $('#send_textarea');
     textarea.val(message);
-    
-    // 전송 버튼 클릭 또는 Enter 이벤트 트리거
     $('#send_but').trigger('click');
-    
-    // 응답 대기 (간단한 방법)
     await waitForResponse();
 }
 
@@ -296,14 +342,12 @@ async function sendMessage(message) {
 function waitForResponse() {
     return new Promise((resolve) => {
         const checkInterval = setInterval(() => {
-            // 생성 중 표시가 사라지면 완료
             if (!$('#send_but').hasClass('disabled') && !$('.mes_generating').length) {
                 clearInterval(checkInterval);
                 resolve();
             }
         }, 500);
         
-        // 타임아웃 (60초)
         setTimeout(() => {
             clearInterval(checkInterval);
             resolve();
@@ -312,23 +356,9 @@ function waitForResponse() {
 }
 
 /**
- * 메시지 숨김 처리
- * @param {number} messageIndex 메시지 인덱스
- */
-async function hideMessage(messageIndex) {
-    try {
-        // /hide 슬래시 커맨드 실행
-        await SlashCommandParser.execute(`/hide ${messageIndex}`);
-    } catch (error) {
-        console.error('[Broadcast] Error hiding message:', error);
-    }
-}
-
-/**
  * 응답 완료 시 자동 숨김 처리
  */
 function handleMessageReceived() {
-    // 현재 채팅 ID 확인
     const currentChatId = getCurrentChatId();
     
     if (pendingHide.has(currentChatId)) {
@@ -337,14 +367,12 @@ function handleMessageReceived() {
         if (hideInfo.waiting) {
             hideInfo.waiting = false;
             
-            // 마지막 2개 메시지 숨김 (보낸 메시지 + 응답)
             const messages = $('#chat .mes');
             const lastIndex = messages.length - 1;
             
-            // 숨김 처리 (역순으로)
             setTimeout(async () => {
-                await hideMessage(lastIndex);     // 응답
-                await hideMessage(lastIndex - 1); // 보낸 메시지
+                await hideMessageByIndex(lastIndex);
+                await hideMessageByIndex(lastIndex - 1);
                 pendingHide.delete(currentChatId);
             }, 500);
         }
@@ -355,47 +383,100 @@ function handleMessageReceived() {
  * 현재 채팅 ID 가져오기
  */
 function getCurrentChatId() {
-    // SillyTavern의 현재 채팅 ID 반환
-    // 실제 구현은 전역 변수나 API를 통해 가져와야 함
     return window.chat_file_name || 'unknown';
 }
 
 /**
  * 슬립 함수
- * @param {number} ms 밀리초
  */
 function sleep(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 /**
- * 슬래시 커맨드 등록
+ * 하단 버튼 영역에 버튼 추가
  */
-function registerSlashCommands() {
-    SlashCommandParser.addCommandObject(SlashCommand.fromProps({
-        name: 'broadcast',
-        callback: async () => {
-            await openChatSelector();
-            return '';
-        },
-        helpString: '여러 채팅에 동일한 메시지를 전송하는 UI를 엽니다.',
-    }));
-}
-
-/**
- * UI 버튼 추가
- */
-function addUIButton() {
-    const buttonHtml = `
-        <div id="broadcast-button" class="list-group-item flex-container flexGap5" title="브로드캐스트 메시지">
-            <div class="fa-solid fa-bullhorn extensionsMenuExtensionButton"></div>
-            <span>브로드캐스트</span>
-        </div>
+function addBottomButtons() {
+    // 버튼 HTML - 입력창 왼쪽 버튼 영역에 추가
+    const broadcastBtnHtml = `
+        <div id="broadcast-btn" class="fa-solid fa-bullhorn interactable" 
+             title="브로드캐스트" 
+             style="cursor: pointer; padding: 5px; font-size: 16px;"></div>
     `;
     
-    // 확장 메뉴에 버튼 추가
-    $('#extensionsMenu').append(buttonHtml);
-    $('#broadcast-button').on('click', openChatSelector);
+    const hideBtnHtml = `
+        <div id="hide-btn" class="fa-solid fa-eye-slash interactable" 
+             title="메시지 숨기기" 
+             style="cursor: pointer; padding: 5px; font-size: 16px;"></div>
+    `;
+    
+    // 입력창 왼쪽 영역에 버튼 추가 (다양한 위치 시도)
+    const targetSelectors = [
+        '#leftSendForm',
+        '#send_form .send_form_buttons_left',
+        '#send_form',
+        '.send_form_buttons',
+        '#data_bank_wand_container',
+    ];
+    
+    let buttonsAdded = false;
+    
+    for (const selector of targetSelectors) {
+        const target = $(selector);
+        if (target.length > 0) {
+            // 컨테이너 생성
+            const container = $(`
+                <div id="broadcast-buttons-container" style="display: flex; gap: 5px; align-items: center; margin-right: 5px;">
+                    ${broadcastBtnHtml}
+                    ${hideBtnHtml}
+                </div>
+            `);
+            
+            if (selector === '#send_form') {
+                target.prepend(container);
+            } else {
+                target.append(container);
+            }
+            
+            buttonsAdded = true;
+            console.log('[Broadcast] Buttons added to:', selector);
+            break;
+        }
+    }
+    
+    // 버튼이 추가되지 않았다면 body에 플로팅 버튼으로 추가
+    if (!buttonsAdded) {
+        const floatingHtml = `
+            <div id="broadcast-floating-buttons" style="
+                position: fixed;
+                bottom: 80px;
+                left: 10px;
+                display: flex;
+                flex-direction: column;
+                gap: 10px;
+                z-index: 1000;
+            ">
+                <div id="broadcast-btn" class="fa-solid fa-bullhorn" 
+                     title="브로드캐스트" 
+                     style="cursor: pointer; padding: 10px; font-size: 18px; 
+                            background: var(--SmartThemeBlurTintColor, #333); 
+                            border-radius: 50%; 
+                            border: 1px solid var(--SmartThemeBorderColor, #444);"></div>
+                <div id="hide-btn" class="fa-solid fa-eye-slash" 
+                     title="메시지 숨기기" 
+                     style="cursor: pointer; padding: 10px; font-size: 18px; 
+                            background: var(--SmartThemeBlurTintColor, #333); 
+                            border-radius: 50%; 
+                            border: 1px solid var(--SmartThemeBorderColor, #444);"></div>
+            </div>
+        `;
+        $('body').append(floatingHtml);
+        console.log('[Broadcast] Floating buttons added');
+    }
+    
+    // 이벤트 바인딩
+    $(document).on('click', '#broadcast-btn', openChatSelector);
+    $(document).on('click', '#hide-btn', openHideModal);
 }
 
 /**
@@ -404,16 +485,13 @@ function addUIButton() {
 jQuery(async () => {
     console.log('[Broadcast] Extension loading...');
     
-    // 설정 로드
     loadSettings();
     
-    // UI 버튼 추가
-    addUIButton();
+    // DOM이 완전히 로드된 후 버튼 추가
+    setTimeout(() => {
+        addBottomButtons();
+    }, 1000);
     
-    // 슬래시 커맨드 등록
-    registerSlashCommands();
-    
-    // 메시지 수신 이벤트 리스너
     eventSource.on(event_types.MESSAGE_RECEIVED, handleMessageReceived);
     
     console.log('[Broadcast] Extension loaded successfully!');
