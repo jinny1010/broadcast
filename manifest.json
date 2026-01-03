@@ -6,6 +6,6 @@
     "js": "index.js",
     "css": "style.css",
     "author": "User",
-    "version": "1.4.0",
+    "version": "1.5.0",
     "description": "Send the same message to multiple chats and auto-hide messages"
 }

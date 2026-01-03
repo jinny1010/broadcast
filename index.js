@@ -10,7 +10,9 @@ import {
 } from '../../../../script.js';
 
 import { extension_settings } from '../../../extensions.js';
-import { callPopup } from '../../../popup.js';
+
+// SillyTavern context에서 callPopup 가져오기
+const getCallPopup = () => SillyTavern.getContext().callPopup;
 
 const extensionName = 'broadcast-message';
 
@@ -130,7 +132,7 @@ async function openChatSelector() {
         </div>
     `;
     
-    const result = await callPopup(popupContent, 'confirm', '', { okButton: '전송', cancelButton: '취소' });
+    const result = await getCallPopup()(popupContent, 'confirm', '', { okButton: '전송', cancelButton: '취소' });
     
     if (result) {
         const message = $('#broadcast-message').val().trim();
@@ -185,7 +187,7 @@ async function openHideModal() {
         </div>
     `;
     
-    const result = await callPopup(popupContent, 'confirm', '', { okButton: '숨기기', cancelButton: '취소' });
+    const result = await getCallPopup()(popupContent, 'confirm', '', { okButton: '숨기기', cancelButton: '취소' });
     
     if (result) {
         const count = parseInt($('#hide-count').val(), 10);
