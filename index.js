@@ -100,8 +100,8 @@ async function openChatSelector() {
         <div style="display:flex; flex-direction:column; gap:15px; min-width:400px;">
             <h3 style="margin:0; text-align:center;">📢 브로드캐스트 메시지</h3>
             
-            <div style="max-height:200px; overflow-y:auto; border:1px solid #444; border-radius:5px; padding:10px;">
-                <label style="display:flex; align-items:center; gap:8px; padding:5px; cursor:pointer; border-bottom:1px solid #444; margin-bottom:10px;">
+            <div style="max-height:200px; overflow-y:auto; border:1px solid var(--SmartThemeBorderColor); border-radius:5px; padding:10px; background:var(--SmartThemeBlurTintColor);">
+                <label style="display:flex; align-items:center; gap:8px; padding:5px; cursor:pointer; border-bottom:1px solid var(--SmartThemeBorderColor); margin-bottom:10px;">
                     <input type="checkbox" id="broadcast-select-all" style="width:18px; height:18px;">
                     <span style="font-weight:bold;">전체 선택</span>
                 </label>
@@ -122,7 +122,7 @@ async function openChatSelector() {
             
             <div>
                 <label style="display:block; margin-bottom:5px;">보낼 메시지:</label>
-                <textarea id="broadcast-message" rows="3" style="width:100%; padding:8px; border-radius:5px; border:1px solid #444; background:#1a1a2e; color:#fff; resize:vertical;" placeholder="여러 캐릭터에게 보낼 메시지를 입력하세요..."></textarea>
+                <textarea id="broadcast-message" rows="3" style="width:100%; padding:8px; border-radius:5px; border:1px solid var(--SmartThemeBorderColor); background:var(--SmartThemeBlurTintColor); color:var(--SmartThemeBodyColor); resize:vertical;" placeholder="여러 캐릭터에게 보낼 메시지를 입력하세요..."></textarea>
             </div>
             
             <label style="display:flex; align-items:center; gap:8px; cursor:pointer;">
@@ -181,8 +181,8 @@ async function openHideModal() {
             <div>
                 <label style="display:block; margin-bottom:5px;">숨길 메시지 개수:</label>
                 <input type="number" id="hide-count" min="1" max="100" value="2" 
-                       style="width:100%; padding:10px; border-radius:5px; border:1px solid #444; background:#1a1a2e; color:#fff; font-size:16px;">
-                <small style="color:#888; margin-top:5px; display:block;">마지막 메시지부터 숨깁니다</small>
+                       style="width:100%; padding:10px; border-radius:5px; border:1px solid var(--SmartThemeBorderColor); background:var(--SmartThemeBlurTintColor); color:var(--SmartThemeBodyColor); font-size:16px;">
+                <small style="color:var(--SmartThemeBodyColor); opacity:0.7; margin-top:5px; display:block;">마지막 메시지부터 숨깁니다</small>
             </div>
         </div>
     `;
@@ -202,11 +202,10 @@ async function openHideModal() {
 }
 
 /**
- * 마지막 N개 메시지 숨기기
+ * 마지막 N개 메시지 숨기기 (/hide 명령어 사용)
  */
 async function hideLastMessages(count) {
-    const messages = $('#chat .mes:not(.hidden-message)');
-    const totalMessages = messages.length;
+    const totalMessages = chat.length;
     
     if (totalMessages === 0) {
         toastr.info('숨길 메시지가 없습니다.');
@@ -214,17 +213,37 @@ async function hideLastMessages(count) {
     }
     
     const hideCount = Math.min(count, totalMessages);
+    const lastIndex = totalMessages - 1;
+    const startIndex = lastIndex - hideCount + 1;
     
     toastr.info(`마지막 ${hideCount}개 메시지를 숨기는 중...`);
     
-    // 마지막 메시지부터 역순으로 숨김
-    for (let i = 0; i < hideCount; i++) {
-        const msgIndex = totalMessages - 1 - i;
-        await hideMessageByIndex(msgIndex);
-        await sleep(100); // 약간의 딜레이
-    }
+    // /hide 명령어 실행: /hide 시작인덱스-끝인덱스
+    const hideCommand = `/hide ${startIndex}-${lastIndex}`;
     
-    toastr.success(`${hideCount}개 메시지를 숨겼습니다.`);
+    try {
+        // 슬래시 명령어 실행
+        const textarea = $('#send_textarea');
+        const originalValue = textarea.val();
+        textarea.val(hideCommand);
+        
+        // Enter 키 이벤트로 명령어 실행
+        const enterEvent = new KeyboardEvent('keydown', {
+            key: 'Enter',
+            code: 'Enter',
+            keyCode: 13,
+            which: 13,
+            bubbles: true
+        });
+        textarea[0].dispatchEvent(enterEvent);
+        
+        await sleep(500);
+        
+        toastr.success(`${hideCount}개 메시지를 숨겼습니다.`);
+    } catch (error) {
+        console.error('[Broadcast] Error hiding messages:', error);
+        toastr.error('메시지 숨기기 실패');
+    }
 }
 
 /**
@@ -252,7 +271,7 @@ async function hideMessageByIndex(index) {
 }
 
 /**
- * 메시지 브로드캐스트 실행
+ * 메시지 브로드캐스트 실행 (백그라운드에서 진행)
  */
 async function broadcastMessage(message, autoHide) {
     if (isProcessing) {
@@ -262,40 +281,63 @@ async function broadcastMessage(message, autoHide) {
     
     isProcessing = true;
     const delay = extension_settings[extensionName].delayBetweenChats;
+    const totalCount = selectedChats.length;
     
-    toastr.info(`${selectedChats.length}개의 캐릭터에게 메시지를 전송합니다...`);
+    toastr.info(`${totalCount}명에게 메시지 전송을 시작합니다...`);
     
     let successCount = 0;
     let failCount = 0;
     
-    for (const chatInfo of selectedChats) {
+    for (let i = 0; i < selectedChats.length; i++) {
+        const chatInfo = selectedChats[i];
+        
         try {
+            // 1. 채팅으로 전환
             await switchToChat(chatInfo);
+            await sleep(1500); // 채팅 로드 대기 충분히
             
-            const currentMsgCount = $('#chat .mes').length;
-            
-            if (autoHide) {
-                pendingHide.set(chatInfo.name, {
-                    startIndex: currentMsgCount,
-                    waiting: true,
-                });
-            }
-            
+            // 2. 메시지 전송
             await sendMessage(message);
             
-            successCount++;
+            // 3. 응답 대기
+            await waitForResponse();
             
-            if (selectedChats.indexOf(chatInfo) < selectedChats.length - 1) {
+            // 4. 자동 숨김
+            if (autoHide) {
+                await sleep(500);
+                const totalMessages = chat.length;
+                if (totalMessages >= 2) {
+                    const hideCommand = `/hide ${totalMessages - 2}-${totalMessages - 1}`;
+                    $('#send_textarea').val(hideCommand);
+                    const enterEvent = new KeyboardEvent('keydown', {
+                        key: 'Enter',
+                        code: 'Enter', 
+                        keyCode: 13,
+                        which: 13,
+                        bubbles: true
+                    });
+                    $('#send_textarea')[0].dispatchEvent(enterEvent);
+                    await sleep(500);
+                }
+            }
+            
+            successCount++;
+            toastr.success(`${successCount}/${totalCount} 완료: ${chatInfo.name}`);
+            
+            // 다음 캐릭터 전에 딜레이
+            if (i < selectedChats.length - 1) {
                 await sleep(delay);
             }
+            
         } catch (error) {
             console.error(`[Broadcast] Failed to send to ${chatInfo.name}:`, error);
             failCount++;
+            toastr.error(`실패: ${chatInfo.name}`);
         }
     }
     
     isProcessing = false;
-    toastr.success(`전송 완료: 성공 ${successCount}, 실패 ${failCount}`);
+    toastr.info(`🎉 전송 완료! 성공: ${successCount}, 실패: ${failCount}`);
 }
 
 /**
