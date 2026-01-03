@@ -21,7 +21,7 @@ const extensionName = 'broadcast-message';
 // 기본 설정
 const defaultSettings = {
     autoHide: true,
-    delayBetweenChats: 50000,
+    delayBetweenChats: 2000,
 };
 
 // 상태 관리
@@ -134,7 +134,7 @@ async function openChatSelector() {
         </div>
     `;
     
-    const result = await getCallPopup()(popupContent, 'confirm', '', { okButton: '전송', cancelButton: '취소' });
+    const result = await getCallPopup()(popupContent, 'confirm', '', { okButton: '전송', cancelButton: '취소', wide: false, large: false });
     
     if (result) {
         const message = $('#broadcast-message').val().trim();
@@ -189,7 +189,7 @@ async function openHideModal() {
         </div>
     `;
     
-    const result = await getCallPopup()(popupContent, 'confirm', '', { okButton: '숨기기', cancelButton: '취소' });
+    const result = await getCallPopup()(popupContent, 'confirm', '', { okButton: '숨기기', cancelButton: '취소', wide: false, large: false });
     
     if (result) {
         const count = parseInt($('#hide-count').val(), 10);
@@ -287,14 +287,13 @@ async function broadcastMessage(message, autoHide) {
             $('#send_textarea').val(message);
             $('#send_but').trigger('click');
             
-            // 4. 응답 완료 대기 (생성 중 표시가 사라질 때까지)
-            await waitForResponse();
+            // 4. 응답 완료 대기 (메시지 +2 될 때까지: 내 메시지 + 응답)
+            await waitForResponse(msgCountBefore + 2);
             
             // 5. 응답 완료 후 숨기기
             if (autoHide) {
                 await sleep(300);
                 const msgCountAfter = getContext().chat.length;
-                // 새로 추가된 메시지들 (보낸 것 + 응답) 숨기기
                 if (msgCountAfter > msgCountBefore) {
                     const hideStart = msgCountBefore;
                     const hideEnd = msgCountAfter - 1;
@@ -359,36 +358,23 @@ async function sendMessage(message) {
 }
 
 /**
- * 응답 대기 (생성 완료될 때까지)
+ * 응답 대기 (메시지 개수가 늘어날 때까지)
  */
-function waitForResponse() {
+function waitForResponse(expectedCount) {
     return new Promise((resolve) => {
-        // 먼저 생성이 시작될 때까지 대기
-        const waitForStart = setInterval(() => {
-            if ($('#mes_stop').is(':visible') || $('.mes_generating').length > 0) {
-                clearInterval(waitForStart);
-                
-                // 생성이 끝날 때까지 대기
-                const waitForEnd = setInterval(() => {
-                    if (!$('#mes_stop').is(':visible') && $('.mes_generating').length === 0) {
-                        clearInterval(waitForEnd);
-                        resolve();
-                    }
-                }, 300);
-                
-                // 타임아웃 (3분)
-                setTimeout(() => {
-                    clearInterval(waitForEnd);
-                    resolve();
-                }, 180000);
+        const checkInterval = setInterval(() => {
+            const currentCount = getContext().chat.length;
+            if (currentCount >= expectedCount) {
+                clearInterval(checkInterval);
+                resolve();
             }
-        }, 100);
+        }, 300);
         
-        // 시작 대기 타임아웃 (10초 - 시작 안 하면 그냥 진행)
+        // 타임아웃 (3분)
         setTimeout(() => {
-            clearInterval(waitForStart);
+            clearInterval(checkInterval);
             resolve();
-        }, 10000);
+        }, 180000);
     });
 }
 

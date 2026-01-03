@@ -9,6 +9,20 @@
     background: rgba(255, 255, 255, 0.1);
 }
 
+/* 팝업 버튼 스타일 */
+.popup-button-ok,
+.popup-button-cancel {
+    min-width: 80px !important;
+    padding: 8px 20px !important;
+}
+
+/* 팝업 버튼 컨테이너 */
+.popup-controls {
+    display: flex !important;
+    gap: 10px !important;
+    justify-content: center !important;
+}
+
 .broadcast-modal {
     position: fixed;
     top: 0;
