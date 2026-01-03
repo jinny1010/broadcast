@@ -21,7 +21,7 @@ const extensionName = 'broadcast-message';
 // 기본 설정
 const defaultSettings = {
     autoHide: true,
-    delayBetweenChats: 2000,
+    delayBetweenChats: 50000,
 };
 
 // 상태 관리
