@@ -378,7 +378,17 @@ async function openBackupModal() {
 }
 
 /**
- * 백업 대상 채팅 파일 선택
+ * 파일명에서 .jsonl 확장자 제거
+ */
+function removeJsonlExtension(fileName) {
+    if (fileName && fileName.endsWith('.jsonl')) {
+        return fileName.slice(0, -6);
+    }
+    return fileName;
+}
+
+/**
+ * 백업 대상 채팅 파일 선택 - API로 목록 가져오기
  */
 async function openBackupTargetSelector(selectedIndices) {
     const ctx = getContext();
@@ -390,10 +400,11 @@ async function openBackupTargetSelector(selectedIndices) {
         return;
     }
     
-    const currentChatFile = currentCharacter.chat;
+    // 현재 채팅 파일의 file_id (확장자 제거)
+    const currentChatFileId = removeJsonlExtension(currentCharacter.chat);
     
     try {
-        // 채팅 파일 목록 가져오기
+        // 채팅 파일 목록 API로 가져오기
         const response = await fetch('/api/characters/chats', {
             method: 'POST',
             headers: ctx.getRequestHeaders(),
@@ -409,7 +420,7 @@ async function openBackupTargetSelector(selectedIndices) {
         
         const chatFiles = await response.json();
         
-        if (!chatFiles || chatFiles.length === 0) {
+        if (!chatFiles || chatFiles.length <= 1) {
             toastr.info('이동할 수 있는 다른 채팅 파일이 없습니다.');
             return;
         }
@@ -421,17 +432,19 @@ async function openBackupTargetSelector(selectedIndices) {
                 
                 <div style="max-height:250px; overflow-y:auto; border:1px solid var(--SmartThemeBorderColor); border-radius:5px; padding:10px; background:var(--SmartThemeBlurTintColor);">
                     ${chatFiles.map((file) => {
-                        const fileName = typeof file === 'string' ? file : (file.file_name || file.name || JSON.stringify(file));
-                        const isCurrent = fileName === currentChatFile;
+                        // file_id 사용 (확장자 없음)
+                        const fileId = file.file_id || removeJsonlExtension(file.file_name);
+                        const displayName = file.file_name || fileId;
+                        const isCurrent = fileId === currentChatFileId;
                         return `
                             <label style="display:flex; align-items:center; gap:8px; padding:8px 5px; cursor:${isCurrent ? 'not-allowed' : 'pointer'}; opacity:${isCurrent ? '0.5' : '1'}; border-bottom:1px solid rgba(255,255,255,0.1);">
                                 <input type="radio" 
                                        name="backup-target" 
                                        class="backup-target-radio" 
-                                       data-file="${fileName}"
+                                       data-file-id="${fileId}"
                                        ${isCurrent ? 'disabled' : ''}
                                        style="width:18px; height:18px;">
-                                <span>${fileName}${isCurrent ? ' (현재)' : ''}</span>
+                                <span>${displayName}${isCurrent ? ' (현재)' : ''}</span>
                             </label>
                         `;
                     }).join('')}
@@ -447,15 +460,15 @@ async function openBackupTargetSelector(selectedIndices) {
         const result = await getCallPopup()(popupContent, 'confirm', '', { okButton: '실행', cancelButton: '취소' });
         
         if (result) {
-            const targetFile = $('.backup-target-radio:checked').data('file');
+            const targetFileId = $('.backup-target-radio:checked').data('file-id');
             const deleteOriginal = $('#backup-delete-original').is(':checked');
             
-            if (!targetFile) {
+            if (!targetFileId) {
                 toastr.warning('대상 채팅 파일을 선택해주세요.');
                 return;
             }
             
-            await copyMessagesToFile(selectedIndices, targetFile, currentCharacter, deleteOriginal);
+            await copyMessagesToFile(selectedIndices, targetFileId, currentChatFileId, deleteOriginal);
         }
         
     } catch (error) {
@@ -465,12 +478,11 @@ async function openBackupTargetSelector(selectedIndices) {
 }
 
 /**
- * 메시지를 다른 파일로 복사/이동
+ * 메시지를 다른 파일로 복사/이동 - openCharacterChat 사용
  */
-async function copyMessagesToFile(indices, targetFile, character, deleteOriginal) {
+async function copyMessagesToFile(indices, targetFileId, currentFileId, deleteOriginal) {
     const ctx = getContext();
     const currentChat = ctx.chat;
-    const currentChatFile = character.chat;
     
     try {
         toastr.info('메시지 처리 중...');
@@ -479,9 +491,16 @@ async function copyMessagesToFile(indices, targetFile, character, deleteOriginal
         const sortedIndices = [...indices].sort((a, b) => a - b);
         const messagesToCopy = sortedIndices.map(i => JSON.parse(JSON.stringify(currentChat[i])));
         
-        // 1. 대상 채팅 파일로 전환
-        await ctx.openCharacterChat(targetFile);
-        await sleep(1500);
+        console.log('[Broadcast] Switching to target file:', targetFileId);
+        
+        // 1. 대상 채팅 파일로 전환 (file_id 사용 - 확장자 없음)
+        await ctx.openCharacterChat(targetFileId);
+        await sleep(2000);
+        
+        // 채팅 로드 완료 대기
+        await waitForChatLoad();
+        
+        console.log('[Broadcast] Target chat loaded, messages:', ctx.chat.length);
         
         // 2. 대상 채팅에 메시지 추가
         const targetChat = ctx.chat;
@@ -489,13 +508,18 @@ async function copyMessagesToFile(indices, targetFile, character, deleteOriginal
             targetChat.push(msg);
         }
         
+        console.log('[Broadcast] Messages added, saving...');
+        
         // 3. 대상 채팅 저장
         await ctx.saveChat();
         await sleep(500);
         
-        // 4. 원본 파일로 돌아가기
-        await ctx.openCharacterChat(currentChatFile);
-        await sleep(1500);
+        console.log('[Broadcast] Saved, switching back to:', currentFileId);
+        
+        // 4. 원본 파일로 돌아가기 (file_id 사용)
+        await ctx.openCharacterChat(currentFileId);
+        await sleep(2000);
+        await waitForChatLoad();
         
         // 5. 원본에서 삭제 (옵션)
         if (deleteOriginal) {
@@ -519,11 +543,36 @@ async function copyMessagesToFile(indices, targetFile, character, deleteOriginal
         
         // 에러 시 원본 파일로 복귀 시도
         try {
-            await ctx.openCharacterChat(character.chat);
+            await ctx.openCharacterChat(currentFileId);
         } catch (e) {
             console.error('[Broadcast] Failed to return to original chat:', e);
         }
     }
+}
+
+/**
+ * 채팅 로드 완료 대기
+ */
+function waitForChatLoad() {
+    return new Promise((resolve) => {
+        let attempts = 0;
+        const maxAttempts = 20;
+        
+        const checkInterval = setInterval(() => {
+            attempts++;
+            // 로딩 표시가 사라지면 완료
+            if (!$('#chat').hasClass('loading') && $('#chat .mes').length >= 0) {
+                clearInterval(checkInterval);
+                setTimeout(resolve, 500);
+                return;
+            }
+            
+            if (attempts >= maxAttempts) {
+                clearInterval(checkInterval);
+                resolve();
+            }
+        }, 300);
+    });
 }
 
 /**
