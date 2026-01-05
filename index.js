@@ -5,8 +5,6 @@ import {
     saveSettingsDebounced,
     eventSource,
     event_types,
-    chat,
-    saveChatDebounced,
 } from '../../../../script.js';
 
 import { extension_settings } from '../../../extensions.js';
@@ -21,13 +19,15 @@ const extensionName = 'broadcast-message';
 // 기본 설정
 const defaultSettings = {
     autoHide: true,
-    delayBetweenChats: 2000,
+    showBroadcastBtn: true,
+    showHideBtn: true,
+    showBackupBtn: true,
+    responseTimeout: 60000,
 };
 
 // 상태 관리
 let isProcessing = false;
 let selectedChats = [];
-let pendingHide = new Map();
 
 /**
  * 설정 초기화
@@ -43,28 +43,98 @@ function loadSettings() {
 }
 
 /**
- * 캐릭터 목록 가져오기 (DOM에서 직접 읽기)
+ * 설정 UI 생성
  */
-async function getChatList() {
-    const characters = [];
+function createSettingsUI() {
+    const settingsHtml = `
+        <div class="broadcast-settings">
+            <div class="inline-drawer">
+                <div class="inline-drawer-toggle inline-drawer-header">
+                    <b>브로드캐스트 설정</b>
+                    <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
+                </div>
+                <div class="inline-drawer-content">
+                    <div class="broadcast-setting-item" style="margin: 10px 0;">
+                        <label style="display:flex; align-items:center; gap:8px; cursor:pointer;">
+                            <input type="checkbox" id="broadcast-show-broadcast-btn" ${extension_settings[extensionName].showBroadcastBtn ? 'checked' : ''}>
+                            <span>브로드캐스트 버튼 표시</span>
+                        </label>
+                    </div>
+                    <div class="broadcast-setting-item" style="margin: 10px 0;">
+                        <label style="display:flex; align-items:center; gap:8px; cursor:pointer;">
+                            <input type="checkbox" id="broadcast-show-hide-btn" ${extension_settings[extensionName].showHideBtn ? 'checked' : ''}>
+                            <span>메시지 숨기기 버튼 표시</span>
+                        </label>
+                    </div>
+                    <div class="broadcast-setting-item" style="margin: 10px 0;">
+                        <label style="display:flex; align-items:center; gap:8px; cursor:pointer;">
+                            <input type="checkbox" id="broadcast-show-backup-btn" ${extension_settings[extensionName].showBackupBtn ? 'checked' : ''}>
+                            <span>백업 버튼 표시</span>
+                        </label>
+                    </div>
+                    <div class="broadcast-setting-item" style="margin: 10px 0;">
+                        <label style="display:block; margin-bottom:5px;">응답 대기 시간 (초)</label>
+                        <input type="number" id="broadcast-timeout" min="10" max="300" value="${extension_settings[extensionName].responseTimeout / 1000}" style="width: 80px; padding: 5px;">
+                    </div>
+                </div>
+            </div>
+        </div>
+    `;
     
-    // 캐릭터 목록에서 가져오기
-    $('.character_select').each(function() {
-        const $this = $(this);
-        const chid = $this.attr('chid');
-        const name = $this.find('.ch_name').text().trim();
-        const avatar = $this.find('img').attr('src') || '';
-        
-        if (name) {
-            characters.push({
-                chid: chid,
-                name: name,
-                avatar: avatar,
-            });
-        }
+    $('#extensions_settings').append(settingsHtml);
+    
+    $('#broadcast-show-broadcast-btn').on('change', function() {
+        extension_settings[extensionName].showBroadcastBtn = this.checked;
+        saveSettingsDebounced();
+        updateButtonVisibility();
     });
     
-    // 그룹도 가져오기
+    $('#broadcast-show-hide-btn').on('change', function() {
+        extension_settings[extensionName].showHideBtn = this.checked;
+        saveSettingsDebounced();
+        updateButtonVisibility();
+    });
+    
+    $('#broadcast-show-backup-btn').on('change', function() {
+        extension_settings[extensionName].showBackupBtn = this.checked;
+        saveSettingsDebounced();
+        updateButtonVisibility();
+    });
+    
+    $('#broadcast-timeout').on('change', function() {
+        extension_settings[extensionName].responseTimeout = parseInt(this.value, 10) * 1000;
+        saveSettingsDebounced();
+    });
+}
+
+/**
+ * 버튼 표시 여부 업데이트
+ */
+function updateButtonVisibility() {
+    $('#broadcast-btn').toggle(extension_settings[extensionName].showBroadcastBtn);
+    $('#hide-btn').toggle(extension_settings[extensionName].showHideBtn);
+    $('#backup-btn').toggle(extension_settings[extensionName].showBackupBtn);
+}
+
+/**
+ * 캐릭터 목록 가져오기
+ */
+async function getChatList() {
+    const ctx = getContext();
+    const characters = [];
+    
+    if (ctx.characters && ctx.characters.length > 0) {
+        ctx.characters.forEach((char, index) => {
+            if (char.name) {
+                characters.push({
+                    chid: index,
+                    name: char.name,
+                    avatar: char.avatar,
+                });
+            }
+        });
+    }
+    
     $('.group_select').each(function() {
         const $this = $(this);
         const grid = $this.attr('grid');
@@ -83,7 +153,7 @@ async function getChatList() {
 }
 
 /**
- * 채팅 선택 UI 열기
+ * 브로드캐스트 UI 열기
  */
 async function openChatSelector() {
     if (isProcessing) {
@@ -134,7 +204,11 @@ async function openChatSelector() {
         </div>
     `;
     
-    const result = await getCallPopup()(popupContent, 'confirm', '', { okButton: '전송', cancelButton: '취소', wide: false, large: false });
+    $(document).off('change', '#broadcast-select-all').on('change', '#broadcast-select-all', function() {
+        $('.broadcast-chat-checkbox').prop('checked', this.checked);
+    });
+    
+    const result = await getCallPopup()(popupContent, 'confirm', '', { okButton: '전송', cancelButton: '취소' });
     
     if (result) {
         const message = $('#broadcast-message').val().trim();
@@ -165,15 +239,10 @@ async function openChatSelector() {
         
         await broadcastMessage(message, autoHide);
     }
-    
-    // 전체 선택 이벤트 (팝업 열릴 때)
-    $(document).off('change', '#broadcast-select-all').on('change', '#broadcast-select-all', function() {
-        $('.broadcast-chat-checkbox').prop('checked', this.checked);
-    });
 }
 
 /**
- * 하이드 개수 입력 모달 열기
+ * 하이드 모달 열기
  */
 async function openHideModal() {
     const popupContent = `
@@ -189,7 +258,7 @@ async function openHideModal() {
         </div>
     `;
     
-    const result = await getCallPopup()(popupContent, 'confirm', '', { okButton: '숨기기', cancelButton: '취소', wide: false, large: false });
+    const result = await getCallPopup()(popupContent, 'confirm', '', { okButton: '숨기기', cancelButton: '취소' });
     
     if (result) {
         const count = parseInt($('#hide-count').val(), 10);
@@ -204,7 +273,7 @@ async function openHideModal() {
 }
 
 /**
- * 마지막 N개 메시지 숨기기 (/hide 명령어 사용)
+ * 마지막 N개 메시지 숨기기
  */
 async function hideLastMessages(count) {
     const currentChat = getContext().chat;
@@ -222,8 +291,8 @@ async function hideLastMessages(count) {
     toastr.info(`마지막 ${hideCount}개 메시지를 숨기는 중...`);
     
     try {
-        // executeSlashCommands로 /hide 실행
         await executeSlashCommands(`/hide ${startIndex}-${lastIndex}`);
+        await sleep(500);
         toastr.success(`${hideCount}개 메시지를 숨겼습니다.`);
     } catch (error) {
         console.error('[Broadcast] Error hiding messages:', error);
@@ -232,31 +301,211 @@ async function hideLastMessages(count) {
 }
 
 /**
- * 인덱스로 메시지 숨기기
+ * 백업 모달 열기
  */
-async function hideMessageByIndex(index) {
-    try {
-        // chat 배열에서 해당 메시지의 is_hidden을 true로 설정
-        if (chat && chat[index]) {
-            chat[index].is_hidden = true;
+async function openBackupModal() {
+    const currentChat = getContext().chat;
+    
+    if (!currentChat || currentChat.length === 0) {
+        toastr.info('백업할 메시지가 없습니다.');
+        return;
+    }
+    
+    const popupContent = `
+        <div style="display:flex; flex-direction:column; gap:15px; min-width:500px; max-width:600px;">
+            <h3 style="margin:0; text-align:center;">📦 메시지 백업</h3>
             
-            // UI 업데이트
-            const messageElement = $(`#chat .mes[mesid="${index}"]`);
-            if (messageElement.length) {
-                messageElement.attr('is_hidden', 'true');
-                messageElement.hide(); // 바로 숨기기
-            }
+            <div style="max-height:300px; overflow-y:auto; border:1px solid var(--SmartThemeBorderColor); border-radius:5px; padding:10px; background:var(--SmartThemeBlurTintColor);">
+                <label style="display:flex; align-items:center; gap:8px; padding:5px; cursor:pointer; border-bottom:1px solid var(--SmartThemeBorderColor); margin-bottom:10px;">
+                    <input type="checkbox" id="backup-select-all" style="width:18px; height:18px;">
+                    <span style="font-weight:bold;">전체 선택</span>
+                </label>
+                ${currentChat.map((msg, index) => `
+                    <label style="display:flex; align-items:flex-start; gap:8px; padding:8px 5px; cursor:pointer; border-bottom:1px solid rgba(255,255,255,0.1);">
+                        <input type="checkbox" 
+                               class="backup-msg-checkbox" 
+                               data-index="${index}"
+                               style="width:18px; height:18px; flex-shrink:0; margin-top:2px;">
+                        <div style="flex:1; overflow:hidden;">
+                            <div style="font-weight:bold; color:${msg.is_user ? '#6eb5ff' : '#ffa500'};">
+                                [${index}] ${msg.name || (msg.is_user ? 'User' : 'Character')}
+                            </div>
+                            <div style="font-size:12px; opacity:0.8; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:400px;">
+                                ${(msg.mes || '').substring(0, 100)}${(msg.mes || '').length > 100 ? '...' : ''}
+                            </div>
+                        </div>
+                    </label>
+                `).join('')}
+            </div>
             
-            // 채팅 저장
-            saveChatDebounced();
+            <small style="color:var(--SmartThemeBodyColor); opacity:0.7;">이동할 메시지를 선택하세요</small>
+        </div>
+    `;
+    
+    $(document).off('change', '#backup-select-all').on('change', '#backup-select-all', function() {
+        $('.backup-msg-checkbox').prop('checked', this.checked);
+    });
+    
+    const result = await getCallPopup()(popupContent, 'confirm', '', { okButton: '다음', cancelButton: '취소', wide: true });
+    
+    if (result) {
+        const selectedIndices = [];
+        $('.backup-msg-checkbox:checked').each(function() {
+            selectedIndices.push(parseInt($(this).data('index'), 10));
+        });
+        
+        if (selectedIndices.length === 0) {
+            toastr.warning('최소 하나의 메시지를 선택해주세요.');
+            return;
         }
-    } catch (error) {
-        console.error('[Broadcast] Error hiding message:', error);
+        
+        await openBackupTargetSelector(selectedIndices);
     }
 }
 
 /**
- * 메시지 브로드캐스트 실행 (순차적으로 응답 완료 후 다음 진행)
+ * 백업 대상 채팅 파일 선택
+ */
+async function openBackupTargetSelector(selectedIndices) {
+    const ctx = getContext();
+    const currentCharId = ctx.characterId;
+    const currentCharacter = ctx.characters[currentCharId];
+    
+    if (!currentCharacter) {
+        toastr.error('현재 캐릭터를 찾을 수 없습니다.');
+        return;
+    }
+    
+    try {
+        const response = await fetch('/api/characters/chats', {
+            method: 'POST',
+            headers: ctx.getRequestHeaders(),
+            body: JSON.stringify({ avatar_url: currentCharacter.avatar }),
+        });
+        
+        if (!response.ok) {
+            throw new Error('채팅 목록을 가져올 수 없습니다.');
+        }
+        
+        const chatFiles = await response.json();
+        
+        if (!chatFiles || chatFiles.length === 0) {
+            toastr.info('이동할 수 있는 다른 채팅 파일이 없습니다.');
+            return;
+        }
+        
+        const currentChatFile = currentCharacter.chat;
+        
+        const popupContent = `
+            <div style="display:flex; flex-direction:column; gap:15px; min-width:400px;">
+                <h3 style="margin:0; text-align:center;">📁 대상 채팅 파일 선택</h3>
+                <p style="margin:0; text-align:center; opacity:0.8;">${selectedIndices.length}개 메시지를 이동합니다</p>
+                
+                <div style="max-height:250px; overflow-y:auto; border:1px solid var(--SmartThemeBorderColor); border-radius:5px; padding:10px; background:var(--SmartThemeBlurTintColor);">
+                    ${chatFiles.map((file) => {
+                        const fileName = file.file_name || file;
+                        const isCurrent = fileName === currentChatFile;
+                        return `
+                            <label style="display:flex; align-items:center; gap:8px; padding:8px 5px; cursor:${isCurrent ? 'not-allowed' : 'pointer'}; opacity:${isCurrent ? '0.5' : '1'}; border-bottom:1px solid rgba(255,255,255,0.1);">
+                                <input type="radio" 
+                                       name="backup-target" 
+                                       class="backup-target-radio" 
+                                       data-file="${fileName}"
+                                       ${isCurrent ? 'disabled' : ''}
+                                       style="width:18px; height:18px;">
+                                <span>${fileName}${isCurrent ? ' (현재)' : ''}</span>
+                            </label>
+                        `;
+                    }).join('')}
+                </div>
+            </div>
+        `;
+        
+        const result = await getCallPopup()(popupContent, 'confirm', '', { okButton: '이동', cancelButton: '취소' });
+        
+        if (result) {
+            const targetFile = $('.backup-target-radio:checked').data('file');
+            
+            if (!targetFile) {
+                toastr.warning('대상 채팅 파일을 선택해주세요.');
+                return;
+            }
+            
+            await moveMessagesToFile(selectedIndices, targetFile, currentCharacter);
+        }
+        
+    } catch (error) {
+        console.error('[Broadcast] Error getting chat files:', error);
+        toastr.error('채팅 파일 목록을 가져오는데 실패했습니다.');
+    }
+}
+
+/**
+ * 메시지를 다른 파일로 이동
+ */
+async function moveMessagesToFile(indices, targetFile, character) {
+    const ctx = getContext();
+    const currentChat = ctx.chat;
+    
+    try {
+        toastr.info('메시지 이동 중...');
+        
+        const messagesToMove = indices.sort((a, b) => a - b).map(i => ({...currentChat[i]}));
+        
+        const response = await fetch('/api/chats/get', {
+            method: 'POST',
+            headers: ctx.getRequestHeaders(),
+            body: JSON.stringify({
+                ch_name: character.name,
+                file_name: targetFile,
+                avatar_url: character.avatar,
+            }),
+        });
+        
+        if (!response.ok) {
+            throw new Error('대상 채팅 파일을 로드할 수 없습니다.');
+        }
+        
+        let targetChatData = await response.json();
+        
+        if (!Array.isArray(targetChatData)) {
+            targetChatData = [];
+        }
+        
+        targetChatData.push(...messagesToMove);
+        
+        const saveResponse = await fetch('/api/chats/save', {
+            method: 'POST',
+            headers: ctx.getRequestHeaders(),
+            body: JSON.stringify({
+                ch_name: character.name,
+                file_name: targetFile,
+                chat: targetChatData,
+                avatar_url: character.avatar,
+            }),
+        });
+        
+        if (!saveResponse.ok) {
+            throw new Error('대상 파일에 저장할 수 없습니다.');
+        }
+        
+        for (const index of indices.sort((a, b) => b - a)) {
+            currentChat.splice(index, 1);
+        }
+        
+        await ctx.saveChat();
+        await ctx.reloadCurrentChat();
+        
+        toastr.success(`${messagesToMove.length}개 메시지를 이동했습니다.`);
+        
+    } catch (error) {
+        console.error('[Broadcast] Error moving messages:', error);
+        toastr.error(`메시지 이동 실패: ${error.message}`);
+    }
+}
+
+/**
+ * 브로드캐스트 실행
  */
 async function broadcastMessage(message, autoHide) {
     if (isProcessing) {
@@ -266,6 +515,7 @@ async function broadcastMessage(message, autoHide) {
     
     isProcessing = true;
     const totalCount = selectedChats.length;
+    const timeout = extension_settings[extensionName].responseTimeout;
     
     toastr.info(`${totalCount}명에게 메시지 전송을 시작합니다...`);
     
@@ -276,137 +526,143 @@ async function broadcastMessage(message, autoHide) {
         const chatInfo = selectedChats[i];
         
         try {
-            // 1. 채팅으로 전환
+            toastr.info(`${chatInfo.name} 채팅으로 이동 중...`);
             await switchToChat(chatInfo);
-            await sleep(3000); // 채팅 로드 대기 (넉넉하게)
             
-            // 2. 메시지 전송 전 현재 메시지 개수 기록
             const msgCountBefore = getContext().chat.length;
             
-            // 3. 메시지 전송
             $('#send_textarea').val(message);
             $('#send_but').trigger('click');
             
-            // 4. 응답 완료 대기 (메시지 +2 될 때까지: 내 메시지 + 응답)
-            await waitForResponse(msgCountBefore + 2);
+            toastr.info(`${chatInfo.name} 응답 대기 중...`);
+            const success = await waitForResponse(msgCountBefore + 2, timeout);
             
-            // 5. 응답 완료 후 숨기기
+            if (!success) {
+                toastr.warning(`${chatInfo.name}: 응답 타임아웃, 스킵합니다`);
+                failCount++;
+                continue;
+            }
+            
             if (autoHide) {
-                await sleep(300);
+                await sleep(1000);
+                
                 const msgCountAfter = getContext().chat.length;
                 if (msgCountAfter > msgCountBefore) {
                     const hideStart = msgCountBefore;
                     const hideEnd = msgCountAfter - 1;
+                    
                     await executeSlashCommands(`/hide ${hideStart}-${hideEnd}`);
+                    await sleep(500);
+                    
+                    // 하이드 완료 확인
+                    const chat = getContext().chat;
+                    const allHidden = chat.slice(hideStart, hideEnd + 1).every(m => m.is_hidden);
+                    if (!allHidden) {
+                        console.warn('[Broadcast] Hide verification failed, retrying...');
+                        await executeSlashCommands(`/hide ${hideStart}-${hideEnd}`);
+                        await sleep(500);
+                    }
                 }
             }
             
             successCount++;
             toastr.success(`${successCount}/${totalCount} 완료: ${chatInfo.name}`);
             
-            // 6. 다음 캐릭터로 넘어가기 전 딜레이
             if (i < selectedChats.length - 1) {
                 await sleep(2000);
             }
             
         } catch (error) {
-            console.error(`[Broadcast] Failed to send to ${chatInfo.name}:`, error);
+            console.error(`[Broadcast] Failed: ${chatInfo.name}`, error);
             failCount++;
             toastr.error(`실패: ${chatInfo.name}`);
         }
     }
     
     isProcessing = false;
-    toastr.info(`🎉 전송 완료! 성공: ${successCount}, 실패: ${failCount}`);
+    
+    if (failCount > 0) {
+        toastr.warning(`전송 완료! 성공: ${successCount}, 실패: ${failCount}`);
+    } else {
+        toastr.success(`🎉 전송 완료! ${successCount}명 모두 성공!`);
+    }
 }
 
 /**
  * 채팅 전환
  */
 async function switchToChat(chatInfo) {
-    let element;
+    const ctx = getContext();
     
     if (chatInfo.isGroup && chatInfo.grid) {
-        // 그룹 선택
-        element = $(`.group_select[grid="${chatInfo.grid}"]`);
-    } else if (chatInfo.chid) {
-        // 캐릭터 선택
-        element = $(`.character_select[chid="${chatInfo.chid}"]`);
+        const element = $(`.group_select[grid="${chatInfo.grid}"]`);
+        if (element.length > 0) {
+            element.trigger('click');
+            await sleep(3000);
+        } else {
+            throw new Error(`Group not found: ${chatInfo.name}`);
+        }
     } else {
-        // 이름으로 찾기
-        element = $(`.character_select`).filter(function() {
-            return $(this).find('.ch_name').text().trim() === chatInfo.name;
-        });
-    }
-    
-    if (element && element.length > 0) {
-        element.trigger('click');
-        await sleep(1000); // 채팅 로드 대기
-    } else {
-        throw new Error(`Character not found: ${chatInfo.name}`);
-    }
-}
-
-/**
- * 메시지 전송
- */
-async function sendMessage(message) {
-    const textarea = $('#send_textarea');
-    textarea.val(message);
-    $('#send_but').trigger('click');
-    await waitForResponse();
-}
-
-/**
- * 응답 대기 (메시지 개수가 늘어날 때까지)
- */
-function waitForResponse(expectedCount) {
-    return new Promise((resolve) => {
-        const checkInterval = setInterval(() => {
-            const currentCount = getContext().chat.length;
-            if (currentCount >= expectedCount) {
-                clearInterval(checkInterval);
-                resolve();
-            }
-        }, 300);
+        const characterIndex = ctx.characters.findIndex(c => c.name === chatInfo.name);
         
-        // 타임아웃 (3분)
-        setTimeout(() => {
-            clearInterval(checkInterval);
-            resolve();
-        }, 180000);
-    });
-}
-
-/**
- * 응답 완료 시 자동 숨김 처리
- */
-function handleMessageReceived() {
-    const currentChatId = getCurrentChatId();
-    
-    if (pendingHide.has(currentChatId)) {
-        const hideInfo = pendingHide.get(currentChatId);
-        
-        if (hideInfo.waiting) {
-            hideInfo.waiting = false;
-            
-            const messages = $('#chat .mes');
-            const lastIndex = messages.length - 1;
-            
-            setTimeout(async () => {
-                await hideMessageByIndex(lastIndex);
-                await hideMessageByIndex(lastIndex - 1);
-                pendingHide.delete(currentChatId);
-            }, 500);
+        if (characterIndex >= 0) {
+            await ctx.selectCharacterById(characterIndex);
+            await waitForCharacterSwitch(characterIndex);
+        } else {
+            throw new Error(`Character not found: ${chatInfo.name}`);
         }
     }
 }
 
 /**
- * 현재 채팅 ID 가져오기
+ * 캐릭터 전환 완료 대기
  */
-function getCurrentChatId() {
-    return window.chat_file_name || 'unknown';
+function waitForCharacterSwitch(targetId) {
+    return new Promise((resolve) => {
+        let attempts = 0;
+        const maxAttempts = 30;
+        
+        const checkInterval = setInterval(() => {
+            attempts++;
+            const currentId = getContext().characterId;
+            
+            if (String(currentId) === String(targetId)) {
+                clearInterval(checkInterval);
+                setTimeout(resolve, 1500);
+                return;
+            }
+            
+            if (attempts >= maxAttempts) {
+                clearInterval(checkInterval);
+                resolve();
+            }
+        }, 500);
+    });
+}
+
+/**
+ * 응답 대기
+ */
+function waitForResponse(expectedCount, timeout) {
+    return new Promise((resolve) => {
+        let elapsed = 0;
+        
+        const checkInterval = setInterval(() => {
+            elapsed += 300;
+            const currentCount = getContext().chat.length;
+            
+            if (currentCount >= expectedCount) {
+                clearInterval(checkInterval);
+                resolve(true);
+                return;
+            }
+            
+            if (elapsed >= timeout) {
+                clearInterval(checkInterval);
+                resolve(false);
+            }
+        }, 300);
+    });
 }
 
 /**
@@ -417,49 +673,47 @@ function sleep(ms) {
 }
 
 /**
- * Extensions 메뉴에 버튼 추가
+ * 메뉴 버튼 추가
  */
-function addBottomButtons() {
-    // 기존 버튼 제거
+function addMenuButtons() {
     $('#broadcast_wand_container').remove();
     
-    // Extensions 메뉴에 추가
     const buttonHtml = `
         <div id="broadcast_wand_container" class="extension_container interactable" tabindex="0">
-            <div id="broadcast-btn" class="list-group-item flex-container flexGap5 interactable" tabindex="0" role="listitem">
+            <div id="broadcast-btn" class="list-group-item flex-container flexGap5 interactable" tabindex="0" role="listitem" style="display:${extension_settings[extensionName].showBroadcastBtn ? 'flex' : 'none'}">
                 <div class="fa-solid fa-bullhorn extensionsMenuExtensionButton"></div>
                 <span>브로드캐스트</span>
             </div>
-            <div id="hide-btn" class="list-group-item flex-container flexGap5 interactable" tabindex="0" role="listitem">
+            <div id="hide-btn" class="list-group-item flex-container flexGap5 interactable" tabindex="0" role="listitem" style="display:${extension_settings[extensionName].showHideBtn ? 'flex' : 'none'}">
                 <div class="fa-solid fa-eye-slash extensionsMenuExtensionButton"></div>
                 <span>메시지 숨기기</span>
+            </div>
+            <div id="backup-btn" class="list-group-item flex-container flexGap5 interactable" tabindex="0" role="listitem" style="display:${extension_settings[extensionName].showBackupBtn ? 'flex' : 'none'}">
+                <div class="fa-solid fa-box-archive extensionsMenuExtensionButton"></div>
+                <span>백업</span>
             </div>
         </div>
     `;
     
     $('#extensionsMenu').prepend(buttonHtml);
     
-    // 이벤트 바인딩
     $('#broadcast-btn').on('click', openChatSelector);
     $('#hide-btn').on('click', openHideModal);
-    
-    console.log('[Broadcast] Buttons added to Extensions menu');
+    $('#backup-btn').on('click', openBackupModal);
 }
 
 /**
- * 확장 프로그램 초기화
+ * 초기화
  */
 jQuery(async () => {
     console.log('[Broadcast] Extension loading...');
     
     loadSettings();
+    createSettingsUI();
     
-    // DOM이 완전히 로드된 후 버튼 추가
     setTimeout(() => {
-        addBottomButtons();
+        addMenuButtons();
     }, 1000);
     
-    eventSource.on(event_types.MESSAGE_RECEIVED, handleMessageReceived);
-    
-    console.log('[Broadcast] Extension loaded successfully!');
+    console.log('[Broadcast] Extension loaded!');
 });

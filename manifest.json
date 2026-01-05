@@ -6,6 +6,6 @@
     "js": "index.js",
     "css": "style.css",
     "author": "User",
-    "version": "1.9.0",
-    "description": "Send the same message to multiple chats and auto-hide messages"
+    "version": "3.0.0",
+    "description": "Broadcast messages, hide messages, and backup messages to other chat files"
 }
