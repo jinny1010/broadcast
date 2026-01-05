@@ -301,15 +301,26 @@ async function hideLastMessages(count) {
 }
 
 /**
- * 백업 모달 열기
+ * 백업 모달 열기 - 최신 메시지부터 표시
  */
 async function openBackupModal() {
-    const currentChat = getContext().chat;
+    const ctx = getContext();
+    const currentChat = ctx.chat;
     
     if (!currentChat || currentChat.length === 0) {
         toastr.info('백업할 메시지가 없습니다.');
         return;
     }
+    
+    // 현재 캐릭터 확인
+    const currentCharId = ctx.characterId;
+    if (currentCharId === undefined) {
+        toastr.error('캐릭터를 먼저 선택해주세요.');
+        return;
+    }
+    
+    // 최신 메시지부터 표시 (역순)
+    const reversedChat = [...currentChat].reverse();
     
     const popupContent = `
         <div style="display:flex; flex-direction:column; gap:15px; min-width:500px; max-width:600px;">
@@ -320,25 +331,28 @@ async function openBackupModal() {
                     <input type="checkbox" id="backup-select-all" style="width:18px; height:18px;">
                     <span style="font-weight:bold;">전체 선택</span>
                 </label>
-                ${currentChat.map((msg, index) => `
-                    <label style="display:flex; align-items:flex-start; gap:8px; padding:8px 5px; cursor:pointer; border-bottom:1px solid rgba(255,255,255,0.1);">
-                        <input type="checkbox" 
-                               class="backup-msg-checkbox" 
-                               data-index="${index}"
-                               style="width:18px; height:18px; flex-shrink:0; margin-top:2px;">
-                        <div style="flex:1; overflow:hidden;">
-                            <div style="font-weight:bold; color:${msg.is_user ? '#6eb5ff' : '#ffa500'};">
-                                [${index}] ${msg.name || (msg.is_user ? 'User' : 'Character')}
+                ${reversedChat.map((msg, displayIndex) => {
+                    const realIndex = currentChat.length - 1 - displayIndex;
+                    return `
+                        <label style="display:flex; align-items:flex-start; gap:8px; padding:8px 5px; cursor:pointer; border-bottom:1px solid rgba(255,255,255,0.1);">
+                            <input type="checkbox" 
+                                   class="backup-msg-checkbox" 
+                                   data-index="${realIndex}"
+                                   style="width:18px; height:18px; flex-shrink:0; margin-top:2px;">
+                            <div style="flex:1; overflow:hidden;">
+                                <div style="font-weight:bold; color:${msg.is_user ? '#6eb5ff' : '#ffa500'};">
+                                    [${realIndex}] ${msg.name || (msg.is_user ? 'User' : 'Character')}
+                                </div>
+                                <div style="font-size:12px; opacity:0.8; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:400px;">
+                                    ${(msg.mes || '').substring(0, 100)}${(msg.mes || '').length > 100 ? '...' : ''}
+                                </div>
                             </div>
-                            <div style="font-size:12px; opacity:0.8; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:400px;">
-                                ${(msg.mes || '').substring(0, 100)}${(msg.mes || '').length > 100 ? '...' : ''}
-                            </div>
-                        </div>
-                    </label>
-                `).join('')}
+                        </label>
+                    `;
+                }).join('')}
             </div>
             
-            <small style="color:var(--SmartThemeBodyColor); opacity:0.7;">이동할 메시지를 선택하세요</small>
+            <small style="color:var(--SmartThemeBodyColor); opacity:0.7;">이동할 메시지를 선택하세요 (최신순)</small>
         </div>
     `;
     
@@ -376,11 +390,17 @@ async function openBackupTargetSelector(selectedIndices) {
         return;
     }
     
+    const currentChatFile = currentCharacter.chat;
+    
     try {
+        // 채팅 파일 목록 가져오기
         const response = await fetch('/api/characters/chats', {
             method: 'POST',
             headers: ctx.getRequestHeaders(),
-            body: JSON.stringify({ avatar_url: currentCharacter.avatar }),
+            body: JSON.stringify({ 
+                avatar_url: currentCharacter.avatar,
+                simple: true 
+            }),
         });
         
         if (!response.ok) {
@@ -394,16 +414,14 @@ async function openBackupTargetSelector(selectedIndices) {
             return;
         }
         
-        const currentChatFile = currentCharacter.chat;
-        
         const popupContent = `
             <div style="display:flex; flex-direction:column; gap:15px; min-width:400px;">
                 <h3 style="margin:0; text-align:center;">📁 대상 채팅 파일 선택</h3>
-                <p style="margin:0; text-align:center; opacity:0.8;">${selectedIndices.length}개 메시지를 이동합니다</p>
+                <p style="margin:0; text-align:center; opacity:0.8;">${selectedIndices.length}개 메시지를 복사합니다</p>
                 
                 <div style="max-height:250px; overflow-y:auto; border:1px solid var(--SmartThemeBorderColor); border-radius:5px; padding:10px; background:var(--SmartThemeBlurTintColor);">
                     ${chatFiles.map((file) => {
-                        const fileName = file.file_name || file;
+                        const fileName = typeof file === 'string' ? file : (file.file_name || file.name || JSON.stringify(file));
                         const isCurrent = fileName === currentChatFile;
                         return `
                             <label style="display:flex; align-items:center; gap:8px; padding:8px 5px; cursor:${isCurrent ? 'not-allowed' : 'pointer'}; opacity:${isCurrent ? '0.5' : '1'}; border-bottom:1px solid rgba(255,255,255,0.1);">
@@ -418,89 +436,93 @@ async function openBackupTargetSelector(selectedIndices) {
                         `;
                     }).join('')}
                 </div>
+                
+                <label style="display:flex; align-items:center; gap:8px; cursor:pointer;">
+                    <input type="checkbox" id="backup-delete-original" style="width:18px; height:18px;">
+                    <span>원본 메시지 삭제 (이동)</span>
+                </label>
             </div>
         `;
         
-        const result = await getCallPopup()(popupContent, 'confirm', '', { okButton: '이동', cancelButton: '취소' });
+        const result = await getCallPopup()(popupContent, 'confirm', '', { okButton: '실행', cancelButton: '취소' });
         
         if (result) {
             const targetFile = $('.backup-target-radio:checked').data('file');
+            const deleteOriginal = $('#backup-delete-original').is(':checked');
             
             if (!targetFile) {
                 toastr.warning('대상 채팅 파일을 선택해주세요.');
                 return;
             }
             
-            await moveMessagesToFile(selectedIndices, targetFile, currentCharacter);
+            await copyMessagesToFile(selectedIndices, targetFile, currentCharacter, deleteOriginal);
         }
         
     } catch (error) {
         console.error('[Broadcast] Error getting chat files:', error);
-        toastr.error('채팅 파일 목록을 가져오는데 실패했습니다.');
+        toastr.error('채팅 파일 목록을 가져오는데 실패했습니다: ' + error.message);
     }
 }
 
 /**
- * 메시지를 다른 파일로 이동
+ * 메시지를 다른 파일로 복사/이동
  */
-async function moveMessagesToFile(indices, targetFile, character) {
+async function copyMessagesToFile(indices, targetFile, character, deleteOriginal) {
     const ctx = getContext();
     const currentChat = ctx.chat;
+    const currentChatFile = character.chat;
     
     try {
-        toastr.info('메시지 이동 중...');
+        toastr.info('메시지 처리 중...');
         
-        const messagesToMove = indices.sort((a, b) => a - b).map(i => ({...currentChat[i]}));
+        // 복사할 메시지들 (인덱스 순서대로 정렬)
+        const sortedIndices = [...indices].sort((a, b) => a - b);
+        const messagesToCopy = sortedIndices.map(i => JSON.parse(JSON.stringify(currentChat[i])));
         
-        const response = await fetch('/api/chats/get', {
-            method: 'POST',
-            headers: ctx.getRequestHeaders(),
-            body: JSON.stringify({
-                ch_name: character.name,
-                file_name: targetFile,
-                avatar_url: character.avatar,
-            }),
-        });
+        // 1. 대상 채팅 파일로 전환
+        await ctx.openCharacterChat(targetFile);
+        await sleep(1500);
         
-        if (!response.ok) {
-            throw new Error('대상 채팅 파일을 로드할 수 없습니다.');
+        // 2. 대상 채팅에 메시지 추가
+        const targetChat = ctx.chat;
+        for (const msg of messagesToCopy) {
+            targetChat.push(msg);
         }
         
-        let targetChatData = await response.json();
-        
-        if (!Array.isArray(targetChatData)) {
-            targetChatData = [];
-        }
-        
-        targetChatData.push(...messagesToMove);
-        
-        const saveResponse = await fetch('/api/chats/save', {
-            method: 'POST',
-            headers: ctx.getRequestHeaders(),
-            body: JSON.stringify({
-                ch_name: character.name,
-                file_name: targetFile,
-                chat: targetChatData,
-                avatar_url: character.avatar,
-            }),
-        });
-        
-        if (!saveResponse.ok) {
-            throw new Error('대상 파일에 저장할 수 없습니다.');
-        }
-        
-        for (const index of indices.sort((a, b) => b - a)) {
-            currentChat.splice(index, 1);
-        }
-        
+        // 3. 대상 채팅 저장
         await ctx.saveChat();
-        await ctx.reloadCurrentChat();
+        await sleep(500);
         
-        toastr.success(`${messagesToMove.length}개 메시지를 이동했습니다.`);
+        // 4. 원본 파일로 돌아가기
+        await ctx.openCharacterChat(currentChatFile);
+        await sleep(1500);
+        
+        // 5. 원본에서 삭제 (옵션)
+        if (deleteOriginal) {
+            const currentChatNow = ctx.chat;
+            // 역순으로 삭제 (인덱스 밀림 방지)
+            for (const index of [...indices].sort((a, b) => b - a)) {
+                if (index < currentChatNow.length) {
+                    currentChatNow.splice(index, 1);
+                }
+            }
+            await ctx.saveChat();
+            await ctx.reloadCurrentChat();
+        }
+        
+        const action = deleteOriginal ? '이동' : '복사';
+        toastr.success(`${messagesToCopy.length}개 메시지를 ${action}했습니다.`);
         
     } catch (error) {
-        console.error('[Broadcast] Error moving messages:', error);
-        toastr.error(`메시지 이동 실패: ${error.message}`);
+        console.error('[Broadcast] Error copying messages:', error);
+        toastr.error(`메시지 처리 실패: ${error.message}`);
+        
+        // 에러 시 원본 파일로 복귀 시도
+        try {
+            await ctx.openCharacterChat(character.chat);
+        } catch (e) {
+            console.error('[Broadcast] Failed to return to original chat:', e);
+        }
     }
 }
 
