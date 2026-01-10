@@ -22,7 +22,7 @@ const defaultSettings = {
     showBroadcastBtn: true,
     showHideBtn: true,
     showBackupBtn: true,
-    responseTimeout: 60000,
+    expectedPersona: '', // 예상 페르소나 이름
 };
 
 // 상태 관리
@@ -73,8 +73,9 @@ function createSettingsUI() {
                         </label>
                     </div>
                     <div class="broadcast-setting-item" style="margin: 10px 0;">
-                        <label style="display:block; margin-bottom:5px;">응답 대기 시간 (초)</label>
-                        <input type="number" id="broadcast-timeout" min="10" max="300" value="${extension_settings[extensionName].responseTimeout / 1000}" style="width: 80px; padding: 5px;">
+                        <label style="display:block; margin-bottom:5px;">예상 페르소나 이름 (선택)</label>
+                        <input type="text" id="broadcast-persona" value="${extension_settings[extensionName].expectedPersona || ''}" placeholder="페르소나 이름 입력 (비워두면 검증 안함)" style="width: 100%; padding: 5px;">
+                        <small style="opacity:0.7; display:block; margin-top:3px;">브로드캐스트 시 페르소나가 맞는지 확인합니다</small>
                     </div>
                 </div>
             </div>
@@ -101,8 +102,8 @@ function createSettingsUI() {
         updateButtonVisibility();
     });
     
-    $('#broadcast-timeout').on('change', function() {
-        extension_settings[extensionName].responseTimeout = parseInt(this.value, 10) * 1000;
+    $('#broadcast-persona').on('change', function() {
+        extension_settings[extensionName].expectedPersona = this.value.trim();
         saveSettingsDebounced();
     });
 }
@@ -586,7 +587,7 @@ async function broadcastMessage(message, autoHide) {
     
     isProcessing = true;
     const totalCount = selectedChats.length;
-    const timeout = extension_settings[extensionName].responseTimeout;
+    const expectedPersona = extension_settings[extensionName].expectedPersona;
     
     toastr.info(`${totalCount}명에게 메시지 전송을 시작합니다...`);
     
@@ -597,26 +598,33 @@ async function broadcastMessage(message, autoHide) {
         const chatInfo = selectedChats[i];
         
         try {
+            // 1. 캐릭터 전환 (/go 커맨드 사용)
             toastr.info(`${chatInfo.name} 채팅으로 이동 중...`);
             await switchToChat(chatInfo);
             
-            const msgCountBefore = getContext().chat.length;
-            
-            $('#send_textarea').val(message);
-            $('#send_but').trigger('click');
-            
-            toastr.info(`${chatInfo.name} 응답 대기 중...`);
-            const success = await waitForResponse(msgCountBefore + 2, timeout);
-            
-            if (!success) {
-                toastr.warning(`${chatInfo.name}: 응답 타임아웃, 스킵합니다`);
+            // 2. 전환 검증 (캐릭터명 + 페르소나)
+            const verified = await verifyCurrentChat(chatInfo.name, expectedPersona);
+            if (!verified) {
+                toastr.error(`${chatInfo.name}: 채팅 전환 검증 실패, 스킵합니다`);
                 failCount++;
                 continue;
             }
             
+            const msgCountBefore = getContext().chat.length;
+            
+            // 3. 메시지 전송
+            $('#send_textarea').val(message);
+            $('#send_but').trigger('click');
+            
+            // 4. Typing Indicator가 사라질 때까지 대기 (응답 완료)
+            toastr.info(`${chatInfo.name} 응답 대기 중...`);
+            await waitForTypingIndicatorGone();
+            
+            // 5. 추가 안정화 대기
+            await sleep(1000);
+            
+            // 6. 자동 숨기기
             if (autoHide) {
-                await sleep(1000);
-                
                 const msgCountAfter = getContext().chat.length;
                 if (msgCountAfter > msgCountBefore) {
                     const hideStart = msgCountBefore;
@@ -639,14 +647,15 @@ async function broadcastMessage(message, autoHide) {
             successCount++;
             toastr.success(`${successCount}/${totalCount} 완료: ${chatInfo.name}`);
             
+            // 다음 캐릭터로 넘어가기 전 잠시 대기
             if (i < selectedChats.length - 1) {
-                await sleep(2000);
+                await sleep(1500);
             }
             
         } catch (error) {
             console.error(`[Broadcast] Failed: ${chatInfo.name}`, error);
             failCount++;
-            toastr.error(`실패: ${chatInfo.name}`);
+            toastr.error(`실패: ${chatInfo.name} - ${error.message}`);
         }
     }
     
@@ -670,6 +679,7 @@ async function switchToChat(chatInfo) {
         if (element.length > 0) {
             element.trigger('click');
             await sleep(3000);
+            await waitForChatLoad();
         } else {
             throw new Error(`Group not found: ${chatInfo.name}`);
         }
@@ -712,27 +722,88 @@ function waitForCharacterSwitch(targetId) {
 }
 
 /**
- * 응답 대기
+ * 현재 채팅이 올바른지 검증 (캐릭터명 + 페르소나)
  */
-function waitForResponse(expectedCount, timeout) {
+async function verifyCurrentChat(expectedCharName, expectedPersona) {
+    const ctx = getContext();
+    
+    // 1. 캐릭터명 검증
+    let currentCharName = '';
+    
+    if (ctx.groupId) {
+        // 그룹인 경우
+        const groups = ctx.groups || [];
+        const currentGroup = groups.find(g => g.id === ctx.groupId);
+        currentCharName = currentGroup?.name || '';
+    } else if (ctx.characterId !== undefined && ctx.characters) {
+        // 개인 캐릭터인 경우
+        const currentChar = ctx.characters[ctx.characterId];
+        currentCharName = currentChar?.name || '';
+    }
+    
+    // 캐릭터명 비교 (공백 무시, 대소문자 무시)
+    const normalizedExpected = expectedCharName.trim().toLowerCase();
+    const normalizedCurrent = currentCharName.trim().toLowerCase();
+    
+    if (normalizedExpected !== normalizedCurrent) {
+        console.error(`[Broadcast] Character mismatch! Expected: ${expectedCharName}, Got: ${currentCharName}`);
+        return false;
+    }
+    
+    console.log(`[Broadcast] Character verified: ${currentCharName}`);
+    
+    // 2. 페르소나 검증 (설정된 경우에만)
+    if (expectedPersona && expectedPersona.trim()) {
+        const currentPersona = ctx.name1 || '';
+        const normalizedExpectedPersona = expectedPersona.trim().toLowerCase();
+        const normalizedCurrentPersona = currentPersona.trim().toLowerCase();
+        
+        if (normalizedExpectedPersona !== normalizedCurrentPersona) {
+            console.error(`[Broadcast] Persona mismatch! Expected: ${expectedPersona}, Got: ${currentPersona}`);
+            toastr.error(`페르소나 불일치: ${expectedPersona} ≠ ${currentPersona}`);
+            return false;
+        }
+        
+        console.log(`[Broadcast] Persona verified: ${currentPersona}`);
+    }
+    
+    return true;
+}
+
+/**
+ * Typing Indicator가 사라질 때까지 대기
+ */
+function waitForTypingIndicatorGone(maxWait = 300000) { // 최대 5분
     return new Promise((resolve) => {
         let elapsed = 0;
+        const checkInterval = 500;
         
-        const checkInterval = setInterval(() => {
-            elapsed += 300;
-            const currentCount = getContext().chat.length;
-            
-            if (currentCount >= expectedCount) {
-                clearInterval(checkInterval);
-                resolve(true);
-                return;
-            }
-            
-            if (elapsed >= timeout) {
-                clearInterval(checkInterval);
-                resolve(false);
-            }
-        }, 300);
+        // 먼저 typing indicator가 나타날 때까지 잠시 대기
+        setTimeout(() => {
+            const interval = setInterval(() => {
+                elapsed += checkInterval;
+                
+                const typingIndicator = document.getElementById('typing_indicator');
+                const isGenerating = $('#send_but').hasClass('displayNone') || 
+                                    $('#mes_stop').is(':visible') ||
+                                    $('#chat').hasClass('loading');
+                
+                // typing indicator가 없고 생성 중이 아니면 완료
+                if (!typingIndicator && !isGenerating) {
+                    clearInterval(interval);
+                    console.log('[Broadcast] Response completed (typing indicator gone)');
+                    resolve(true);
+                    return;
+                }
+                
+                // 최대 대기 시간 초과
+                if (elapsed >= maxWait) {
+                    clearInterval(interval);
+                    console.warn('[Broadcast] Max wait time exceeded');
+                    resolve(false);
+                }
+            }, checkInterval);
+        }, 1000); // 1초 후부터 체크 시작
     });
 }
 
