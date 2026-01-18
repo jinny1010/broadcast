@@ -23,11 +23,20 @@ const defaultSettings = {
     showHideBtn: true,
     showBackupBtn: true,
     expectedPersona: '', // 예상 페르소나 이름
+    messageCount: 1, // 캐릭터당 메시지 개수
 };
 
 // 상태 관리
 let isProcessing = false;
+let isPaused = false;
+let shouldStop = false;
 let selectedChats = [];
+let currentBroadcastMessages = []; // 브로드캐스트할 메시지 배열
+let currentMessageIndex = 0;
+let currentCharIndex = 0;
+
+// 백업 체크박스 범위 선택용
+let lastCheckedBackupIndex = null;
 
 /**
  * 설정 초기화
@@ -169,8 +178,10 @@ async function openChatSelector() {
         return;
     }
     
+    const savedMessageCount = extension_settings[extensionName].messageCount || 1;
+    
     const popupContent = `
-        <div style="display:flex; flex-direction:column; gap:15px; min-width:400px;">
+        <div style="display:flex; flex-direction:column; gap:15px; min-width:450px;">
             <h3 style="margin:0; text-align:center;">📢 브로드캐스트 메시지</h3>
             
             <div style="max-height:200px; overflow-y:auto; border:1px solid var(--SmartThemeBorderColor); border-radius:5px; padding:10px; background:var(--SmartThemeBlurTintColor);">
@@ -194,8 +205,17 @@ async function openChatSelector() {
             </div>
             
             <div>
+                <label style="display:block; margin-bottom:5px;">캐릭터당 메시지 개수:</label>
+                <input type="number" id="broadcast-message-count" min="1" max="10" value="${savedMessageCount}" 
+                       style="width:100%; padding:8px; border-radius:5px; border:1px solid var(--SmartThemeBorderColor); background:var(--SmartThemeBlurTintColor); color:var(--SmartThemeBodyColor);">
+                <small style="opacity:0.7; display:block; margin-top:3px;">각 캐릭터에서 순차적으로 N개 메시지를 보내고 각각 숨김 처리합니다</small>
+            </div>
+            
+            <div id="broadcast-messages-container">
                 <label style="display:block; margin-bottom:5px;">보낼 메시지:</label>
-                <textarea id="broadcast-message" rows="3" style="width:100%; padding:8px; border-radius:5px; border:1px solid var(--SmartThemeBorderColor); background:var(--SmartThemeBlurTintColor); color:var(--SmartThemeBodyColor); resize:vertical;" placeholder="여러 캐릭터에게 보낼 메시지를 입력하세요..."></textarea>
+                <div id="broadcast-message-inputs">
+                    <textarea class="broadcast-message-input" data-msg-index="0" rows="2" style="width:100%; padding:8px; border-radius:5px; border:1px solid var(--SmartThemeBorderColor); background:var(--SmartThemeBlurTintColor); color:var(--SmartThemeBodyColor); resize:vertical; margin-bottom:5px;" placeholder="메시지 1"></textarea>
+                </div>
             </div>
             
             <label style="display:flex; align-items:center; gap:8px; cursor:pointer;">
@@ -205,18 +225,34 @@ async function openChatSelector() {
         </div>
     `;
     
+    // 이벤트 핸들러 설정
     $(document).off('change', '#broadcast-select-all').on('change', '#broadcast-select-all', function() {
         $('.broadcast-chat-checkbox').prop('checked', this.checked);
+    });
+    
+    // 메시지 개수 변경 시 입력 필드 동적 생성
+    $(document).off('change input', '#broadcast-message-count').on('change input', '#broadcast-message-count', function() {
+        const count = parseInt($(this).val(), 10) || 1;
+        updateMessageInputs(count);
     });
     
     const result = await getCallPopup()(popupContent, 'confirm', '', { okButton: '전송', cancelButton: '취소' });
     
     if (result) {
-        const message = $('#broadcast-message').val().trim();
+        const messageCount = parseInt($('#broadcast-message-count').val(), 10) || 1;
+        const messages = [];
+        
+        $('.broadcast-message-input').each(function() {
+            const msg = $(this).val().trim();
+            if (msg) {
+                messages.push(msg);
+            }
+        });
+        
         const autoHide = $('#broadcast-auto-hide').is(':checked');
         
-        if (!message) {
-            toastr.warning('메시지를 입력해주세요.');
+        if (messages.length === 0) {
+            toastr.warning('최소 하나의 메시지를 입력해주세요.');
             return;
         }
         
@@ -236,9 +272,41 @@ async function openChatSelector() {
         }
         
         extension_settings[extensionName].autoHide = autoHide;
+        extension_settings[extensionName].messageCount = messageCount;
         saveSettingsDebounced();
         
-        await broadcastMessage(message, autoHide);
+        await broadcastMessage(messages, autoHide);
+    }
+}
+
+/**
+ * 메시지 입력 필드 동적 업데이트
+ */
+function updateMessageInputs(count) {
+    const container = $('#broadcast-message-inputs');
+    const currentInputs = container.find('.broadcast-message-input');
+    const currentCount = currentInputs.length;
+    
+    // 기존 값 저장
+    const existingValues = [];
+    currentInputs.each(function() {
+        existingValues.push($(this).val());
+    });
+    
+    if (count > currentCount) {
+        // 추가
+        for (let i = currentCount; i < count; i++) {
+            container.append(`
+                <textarea class="broadcast-message-input" data-msg-index="${i}" rows="2" 
+                    style="width:100%; padding:8px; border-radius:5px; border:1px solid var(--SmartThemeBorderColor); background:var(--SmartThemeBlurTintColor); color:var(--SmartThemeBodyColor); resize:vertical; margin-bottom:5px;" 
+                    placeholder="메시지 ${i + 1}"></textarea>
+            `);
+        }
+    } else if (count < currentCount) {
+        // 삭제
+        for (let i = currentCount - 1; i >= count; i--) {
+            container.find(`.broadcast-message-input[data-msg-index="${i}"]`).remove();
+        }
     }
 }
 
@@ -302,7 +370,7 @@ async function hideLastMessages(count) {
 }
 
 /**
- * 백업 모달 열기 - 최신 메시지부터 표시
+ * 백업 모달 열기 - 최신 메시지부터 표시 + Shift 클릭 범위 선택
  */
 async function openBackupModal() {
     const ctx = getContext();
@@ -320,12 +388,28 @@ async function openBackupModal() {
         return;
     }
     
+    // 범위 선택 상태 초기화
+    lastCheckedBackupIndex = null;
+    
     // 최신 메시지부터 표시 (역순)
     const reversedChat = [...currentChat].reverse();
     
     const popupContent = `
         <div style="display:flex; flex-direction:column; gap:15px; min-width:500px; max-width:600px;">
             <h3 style="margin:0; text-align:center;">📦 메시지 백업</h3>
+            
+            <div style="display:flex; gap:10px; justify-content:center; flex-wrap:wrap;">
+                <button id="backup-select-range-btn" class="menu_button" style="padding:5px 10px; font-size:12px;">
+                    📍 범위 선택 모드
+                </button>
+                <input type="number" id="backup-range-start" placeholder="시작 인덱스" style="width:80px; padding:5px; border-radius:5px; border:1px solid var(--SmartThemeBorderColor); background:var(--SmartThemeBlurTintColor); color:var(--SmartThemeBodyColor);">
+                <span style="line-height:30px;">~</span>
+                <input type="number" id="backup-range-end" placeholder="끝 인덱스" style="width:80px; padding:5px; border-radius:5px; border:1px solid var(--SmartThemeBorderColor); background:var(--SmartThemeBlurTintColor); color:var(--SmartThemeBodyColor);">
+                <button id="backup-apply-range-btn" class="menu_button" style="padding:5px 10px; font-size:12px;">
+                    ✓ 적용
+                </button>
+            </div>
+            <small style="text-align:center; opacity:0.7;">💡 Shift+클릭으로 범위 선택 가능 / 인덱스 직접 입력도 가능</small>
             
             <div style="max-height:300px; overflow-y:auto; border:1px solid var(--SmartThemeBorderColor); border-radius:5px; padding:10px; background:var(--SmartThemeBlurTintColor);">
                 <label style="display:flex; align-items:center; gap:8px; padding:5px; cursor:pointer; border-bottom:1px solid var(--SmartThemeBorderColor); margin-bottom:10px;">
@@ -335,10 +419,11 @@ async function openBackupModal() {
                 ${reversedChat.map((msg, displayIndex) => {
                     const realIndex = currentChat.length - 1 - displayIndex;
                     return `
-                        <label style="display:flex; align-items:flex-start; gap:8px; padding:8px 5px; cursor:pointer; border-bottom:1px solid rgba(255,255,255,0.1);">
+                        <label style="display:flex; align-items:flex-start; gap:8px; padding:8px 5px; cursor:pointer; border-bottom:1px solid rgba(255,255,255,0.1);" data-real-index="${realIndex}">
                             <input type="checkbox" 
                                    class="backup-msg-checkbox" 
                                    data-index="${realIndex}"
+                                   data-display-index="${displayIndex}"
                                    style="width:18px; height:18px; flex-shrink:0; margin-top:2px;">
                             <div style="flex:1; overflow:hidden;">
                                 <div style="font-weight:bold; color:${msg.is_user ? '#6eb5ff' : '#ffa500'};">
@@ -357,8 +442,52 @@ async function openBackupModal() {
         </div>
     `;
     
+    // 전체 선택 이벤트
     $(document).off('change', '#backup-select-all').on('change', '#backup-select-all', function() {
         $('.backup-msg-checkbox').prop('checked', this.checked);
+    });
+    
+    // Shift 클릭 범위 선택 이벤트
+    $(document).off('click', '.backup-msg-checkbox').on('click', '.backup-msg-checkbox', function(e) {
+        const currentIndex = parseInt($(this).data('display-index'), 10);
+        
+        if (e.shiftKey && lastCheckedBackupIndex !== null) {
+            const start = Math.min(lastCheckedBackupIndex, currentIndex);
+            const end = Math.max(lastCheckedBackupIndex, currentIndex);
+            const isChecked = $(this).prop('checked');
+            
+            $('.backup-msg-checkbox').each(function() {
+                const idx = parseInt($(this).data('display-index'), 10);
+                if (idx >= start && idx <= end) {
+                    $(this).prop('checked', isChecked);
+                }
+            });
+        }
+        
+        lastCheckedBackupIndex = currentIndex;
+    });
+    
+    // 범위 적용 버튼 이벤트
+    $(document).off('click', '#backup-apply-range-btn').on('click', '#backup-apply-range-btn', function() {
+        const startIdx = parseInt($('#backup-range-start').val(), 10);
+        const endIdx = parseInt($('#backup-range-end').val(), 10);
+        
+        if (isNaN(startIdx) || isNaN(endIdx)) {
+            toastr.warning('시작과 끝 인덱스를 입력해주세요.');
+            return;
+        }
+        
+        const minIdx = Math.min(startIdx, endIdx);
+        const maxIdx = Math.max(startIdx, endIdx);
+        
+        $('.backup-msg-checkbox').each(function() {
+            const realIdx = parseInt($(this).data('index'), 10);
+            if (realIdx >= minIdx && realIdx <= maxIdx) {
+                $(this).prop('checked', true);
+            }
+        });
+        
+        toastr.success(`인덱스 ${minIdx}~${maxIdx} 범위 선택됨`);
     });
     
     const result = await getCallPopup()(popupContent, 'confirm', '', { okButton: '다음', cancelButton: '취소', wide: true });
@@ -577,32 +706,176 @@ function waitForChatLoad() {
 }
 
 /**
- * 브로드캐스트 실행
+ * 브로드캐스트 컨트롤 패널 표시
  */
-async function broadcastMessage(message, autoHide) {
+function showBroadcastControlPanel() {
+    // 기존 패널 제거
+    $('#broadcast-control-panel').remove();
+    
+    const panelHtml = `
+        <div id="broadcast-control-panel" style="
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            padding: 15px 20px;
+            background: var(--SmartThemeBlurTintColor, #1a1a2e);
+            border: 2px solid var(--SmartThemeBorderColor, #444);
+            border-radius: 10px;
+            color: var(--SmartThemeBodyColor, #fff);
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
+            z-index: 10000;
+            min-width: 300px;
+        ">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+                <span style="font-weight:bold;">📢 브로드캐스트 진행 중</span>
+                <span id="broadcast-progress-text">0/0</span>
+            </div>
+            <div id="broadcast-status" style="margin-bottom:10px; font-size:13px; opacity:0.9;">준비 중...</div>
+            <div style="height:6px; background:var(--SmartThemeBorderColor); border-radius:3px; overflow:hidden; margin-bottom:15px;">
+                <div id="broadcast-progress-bar" style="height:100%; width:0%; background:var(--SmartThemeQuoteColor, #4a9eff); transition:width 0.3s;"></div>
+            </div>
+            <div style="display:flex; gap:8px; flex-wrap:wrap;">
+                <button id="broadcast-pause-btn" class="menu_button" style="flex:1; padding:8px; min-width:80px;">
+                    ⏸️ 일시정지
+                </button>
+                <button id="broadcast-edit-btn" class="menu_button" style="flex:1; padding:8px; min-width:80px;">
+                    ✏️ 메시지 수정
+                </button>
+                <button id="broadcast-stop-btn" class="menu_button" style="flex:1; padding:8px; min-width:80px; background:#ff4444;">
+                    ⏹️ 중지
+                </button>
+            </div>
+        </div>
+    `;
+    
+    $('body').append(panelHtml);
+    
+    // 일시정지 버튼
+    $('#broadcast-pause-btn').on('click', function() {
+        isPaused = !isPaused;
+        $(this).html(isPaused ? '▶️ 계속' : '⏸️ 일시정지');
+        $('#broadcast-status').text(isPaused ? '⏸️ 일시정지됨 - 계속하려면 클릭하세요' : '진행 중...');
+    });
+    
+    // 중지 버튼
+    $('#broadcast-stop-btn').on('click', async function() {
+        const confirmed = await getCallPopup()('브로드캐스트를 중지하시겠습니까?', 'confirm', '', { okButton: '중지', cancelButton: '취소' });
+        if (confirmed) {
+            shouldStop = true;
+            isPaused = false;
+            $('#broadcast-status').text('⏹️ 중지 중...');
+        }
+    });
+    
+    // 메시지 수정 버튼
+    $('#broadcast-edit-btn').on('click', async function() {
+        isPaused = true;
+        $('#broadcast-pause-btn').html('▶️ 계속');
+        
+        await openMessageEditPopup();
+    });
+}
+
+/**
+ * 메시지 수정 팝업
+ */
+async function openMessageEditPopup() {
+    const popupContent = `
+        <div style="display:flex; flex-direction:column; gap:15px; min-width:400px;">
+            <h3 style="margin:0; text-align:center;">✏️ 메시지 수정</h3>
+            <small style="text-align:center; opacity:0.7;">수정 후 계속 진행하면 남은 캐릭터들에게 수정된 메시지가 전송됩니다</small>
+            
+            <div id="edit-message-inputs">
+                ${currentBroadcastMessages.map((msg, idx) => `
+                    <div style="margin-bottom:10px;">
+                        <label style="display:block; margin-bottom:5px;">메시지 ${idx + 1}${idx === currentMessageIndex ? ' (현재)' : ''}:</label>
+                        <textarea class="edit-broadcast-message" data-msg-index="${idx}" rows="2" 
+                            style="width:100%; padding:8px; border-radius:5px; border:1px solid var(--SmartThemeBorderColor); background:var(--SmartThemeBlurTintColor); color:var(--SmartThemeBodyColor); resize:vertical;"
+                        >${msg}</textarea>
+                    </div>
+                `).join('')}
+            </div>
+        </div>
+    `;
+    
+    const result = await getCallPopup()(popupContent, 'confirm', '', { okButton: '저장 후 계속', cancelButton: '취소' });
+    
+    if (result) {
+        // 수정된 메시지 저장
+        $('.edit-broadcast-message').each(function() {
+            const idx = parseInt($(this).data('msg-index'), 10);
+            currentBroadcastMessages[idx] = $(this).val().trim();
+        });
+        
+        toastr.success('메시지가 수정되었습니다. 계속 버튼을 눌러주세요.');
+    }
+    
+    $('#broadcast-status').text('⏸️ 일시정지됨 - 계속하려면 클릭하세요');
+}
+
+/**
+ * 컨트롤 패널 업데이트
+ */
+function updateControlPanel(charIndex, msgIndex, totalChars, totalMsgs, charName, status) {
+    const totalProgress = charIndex * totalMsgs + msgIndex;
+    const totalSteps = totalChars * totalMsgs;
+    const percent = totalSteps > 0 ? (totalProgress / totalSteps * 100) : 0;
+    
+    $('#broadcast-progress-text').text(`${charIndex + 1}/${totalChars} 캐릭터, ${msgIndex}/${totalMsgs} 메시지`);
+    $('#broadcast-progress-bar').css('width', `${percent}%`);
+    $('#broadcast-status').text(`${charName}: ${status}`);
+}
+
+/**
+ * 컨트롤 패널 숨기기
+ */
+function hideControlPanel() {
+    $('#broadcast-control-panel').remove();
+}
+
+/**
+ * 브로드캐스트 실행 (개선된 버전)
+ */
+async function broadcastMessage(messages, autoHide) {
     if (isProcessing) {
         toastr.warning('이미 진행 중입니다.');
         return;
     }
     
     isProcessing = true;
-    const totalCount = selectedChats.length;
+    isPaused = false;
+    shouldStop = false;
+    currentBroadcastMessages = [...messages];
+    currentCharIndex = 0;
+    currentMessageIndex = 0;
+    
+    const totalChars = selectedChats.length;
+    const totalMsgs = messages.length;
     const expectedPersona = extension_settings[extensionName].expectedPersona;
     
-    toastr.info(`${totalCount}명에게 메시지 전송을 시작합니다...`);
+    // 컨트롤 패널 표시
+    showBroadcastControlPanel();
+    
+    toastr.info(`${totalChars}명에게 각 ${totalMsgs}개 메시지 전송을 시작합니다...`);
     
     let successCount = 0;
     let failCount = 0;
     
     for (let i = 0; i < selectedChats.length; i++) {
+        if (shouldStop) {
+            toastr.warning('브로드캐스트가 중지되었습니다.');
+            break;
+        }
+        
+        currentCharIndex = i;
         const chatInfo = selectedChats[i];
         
         try {
-            // 1. 캐릭터 전환 (/go 커맨드 사용)
-            toastr.info(`${chatInfo.name} 채팅으로 이동 중...`);
+            // 1. 캐릭터 전환
+            updateControlPanel(i, 0, totalChars, totalMsgs, chatInfo.name, '채팅으로 이동 중...');
             await switchToChat(chatInfo);
             
-            // 2. 전환 검증 (캐릭터명 + 페르소나)
+            // 2. 전환 검증
             const verified = await verifyCurrentChat(chatInfo.name, expectedPersona);
             if (!verified) {
                 toastr.error(`${chatInfo.name}: 채팅 전환 검증 실패, 스킵합니다`);
@@ -610,45 +883,66 @@ async function broadcastMessage(message, autoHide) {
                 continue;
             }
             
-            const msgCountBefore = getContext().chat.length;
-            
-            // 3. 메시지 전송
-            $('#send_textarea').val(message);
-            $('#send_but').trigger('click');
-            
-            // 4. Typing Indicator가 사라질 때까지 대기 (응답 완료)
-            toastr.info(`${chatInfo.name} 응답 대기 중...`);
-            await waitForTypingIndicatorGone();
-            
-            // 5. 추가 안정화 대기
-            await sleep(1000);
-            
-            // 6. 자동 숨기기
-            if (autoHide) {
-                const msgCountAfter = getContext().chat.length;
-                if (msgCountAfter > msgCountBefore) {
-                    const hideStart = msgCountBefore;
-                    const hideEnd = msgCountAfter - 1;
-                    
-                    await executeSlashCommands(`/hide ${hideStart}-${hideEnd}`);
+            // 3. 각 메시지 순차 전송 (한 캐릭터에서 모두 진행)
+            for (let j = 0; j < currentBroadcastMessages.length; j++) {
+                if (shouldStop) break;
+                
+                // 일시정지 대기
+                while (isPaused && !shouldStop) {
                     await sleep(500);
-                    
-                    // 하이드 완료 확인
-                    const chat = getContext().chat;
-                    const allHidden = chat.slice(hideStart, hideEnd + 1).every(m => m.is_hidden);
-                    if (!allHidden) {
-                        console.warn('[Broadcast] Hide verification failed, retrying...');
+                }
+                if (shouldStop) break;
+                
+                currentMessageIndex = j;
+                const message = currentBroadcastMessages[j];
+                
+                if (!message) continue;
+                
+                updateControlPanel(i, j + 1, totalChars, totalMsgs, chatInfo.name, `메시지 ${j + 1} 전송 중...`);
+                
+                const msgCountBefore = getContext().chat.length;
+                
+                // 메시지 전송
+                $('#send_textarea').val(message);
+                $('#send_but').trigger('click');
+                
+                // Typing Indicator + 이미지 생성 대기
+                updateControlPanel(i, j + 1, totalChars, totalMsgs, chatInfo.name, `응답 대기 중...`);
+                await waitForResponseComplete();
+                
+                // 추가 안정화 대기
+                await sleep(1000);
+                
+                // 자동 숨기기 (각 메시지마다)
+                if (autoHide) {
+                    const msgCountAfter = getContext().chat.length;
+                    if (msgCountAfter > msgCountBefore) {
+                        const hideStart = msgCountBefore;
+                        const hideEnd = msgCountAfter - 1;
+                        
+                        updateControlPanel(i, j + 1, totalChars, totalMsgs, chatInfo.name, `메시지 숨김 처리 중...`);
                         await executeSlashCommands(`/hide ${hideStart}-${hideEnd}`);
                         await sleep(500);
+                        
+                        // 하이드 완료 확인
+                        const chat = getContext().chat;
+                        const allHidden = chat.slice(hideStart, hideEnd + 1).every(m => m.is_hidden);
+                        if (!allHidden) {
+                            console.warn('[Broadcast] Hide verification failed, retrying...');
+                            await executeSlashCommands(`/hide ${hideStart}-${hideEnd}`);
+                            await sleep(500);
+                        }
                     }
                 }
             }
             
-            successCount++;
-            toastr.success(`${successCount}/${totalCount} 완료: ${chatInfo.name}`);
+            if (!shouldStop) {
+                successCount++;
+                toastr.success(`${successCount}/${totalChars} 완료: ${chatInfo.name}`);
+            }
             
             // 다음 캐릭터로 넘어가기 전 잠시 대기
-            if (i < selectedChats.length - 1) {
+            if (i < selectedChats.length - 1 && !shouldStop) {
                 await sleep(1500);
             }
             
@@ -660,8 +954,11 @@ async function broadcastMessage(message, autoHide) {
     }
     
     isProcessing = false;
+    hideControlPanel();
     
-    if (failCount > 0) {
+    if (shouldStop) {
+        toastr.warning(`브로드캐스트 중지됨. 성공: ${successCount}, 실패: ${failCount}`);
+    } else if (failCount > 0) {
         toastr.warning(`전송 완료! 성공: ${successCount}, 실패: ${failCount}`);
     } else {
         toastr.success(`🎉 전송 완료! ${successCount}명 모두 성공!`);
@@ -771,27 +1068,62 @@ async function verifyCurrentChat(expectedCharName, expectedPersona) {
 }
 
 /**
- * Typing Indicator가 사라질 때까지 대기
+ * 응답 완료 대기 (Typing Indicator + 이미지 생성 토스트 감지)
  */
-function waitForTypingIndicatorGone(maxWait = 300000) { // 최대 5분
+function waitForResponseComplete(maxWait = 600000) { // 최대 10분
     return new Promise((resolve) => {
         let elapsed = 0;
         const checkInterval = 500;
+        let imageGenerating = false;
+        let textResponseDone = false;
         
         // 먼저 typing indicator가 나타날 때까지 잠시 대기
         setTimeout(() => {
             const interval = setInterval(() => {
                 elapsed += checkInterval;
                 
+                // 이미지 생성 토스트 감지 (있을 때만)
+                const generatingToast = $('.toast-info .toast-message:contains("Generating")').length > 0 ||
+                                        $('.toast-info .toast-message:contains("images")').length > 0;
+                const successToast = $('.toast-success .toast-message:contains("generated successfully")').length > 0 ||
+                                     $('.toast-success .toast-message:contains("images")').length > 0;
+                
+                // 이미지 생성 토스트가 떴으면 플래그 설정
+                if (generatingToast && !imageGenerating) {
+                    imageGenerating = true;
+                    console.log('[Broadcast] Image generation detected, waiting for completion...');
+                }
+                
+                // typing indicator 체크
                 const typingIndicator = document.getElementById('typing_indicator');
                 const isGenerating = $('#send_but').hasClass('displayNone') || 
                                     $('#mes_stop').is(':visible') ||
                                     $('#chat').hasClass('loading');
                 
-                // typing indicator가 없고 생성 중이 아니면 완료
+                // 텍스트 응답 완료 체크
                 if (!typingIndicator && !isGenerating) {
+                    textResponseDone = true;
+                }
+                
+                // 이미지 생성 중이었다면 성공 토스트 대기
+                if (imageGenerating) {
+                    if (successToast) {
+                        console.log('[Broadcast] Image generation completed');
+                        // 이미지 생성 완료 후 추가 대기
+                        setTimeout(() => {
+                            clearInterval(interval);
+                            resolve(true);
+                        }, 1500);
+                        return;
+                    }
+                    // 이미지 생성 중이면 계속 대기
+                    return;
+                }
+                
+                // 이미지 생성이 없고 텍스트 응답만 완료되면 종료
+                if (textResponseDone && !generatingToast) {
                     clearInterval(interval);
-                    console.log('[Broadcast] Response completed (typing indicator gone)');
+                    console.log('[Broadcast] Response completed (text only)');
                     resolve(true);
                     return;
                 }
