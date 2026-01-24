@@ -398,18 +398,22 @@ async function openBackupModal() {
         <div style="display:flex; flex-direction:column; gap:15px; min-width:500px; max-width:600px;">
             <h3 style="margin:0; text-align:center;">📦 메시지 백업</h3>
             
-            <div style="display:flex; gap:10px; justify-content:center; flex-wrap:wrap;">
-                <button id="backup-select-range-btn" class="menu_button" style="padding:5px 10px; font-size:12px;">
-                    📍 범위 선택 모드
-                </button>
-                <input type="number" id="backup-range-start" placeholder="시작 인덱스" style="width:80px; padding:5px; border-radius:5px; border:1px solid var(--SmartThemeBorderColor); background:var(--SmartThemeBlurTintColor); color:var(--SmartThemeBodyColor);">
-                <span style="line-height:30px;">~</span>
-                <input type="number" id="backup-range-end" placeholder="끝 인덱스" style="width:80px; padding:5px; border-radius:5px; border:1px solid var(--SmartThemeBorderColor); background:var(--SmartThemeBlurTintColor); color:var(--SmartThemeBodyColor);">
-                <button id="backup-apply-range-btn" class="menu_button" style="padding:5px 10px; font-size:12px;">
-                    ✓ 적용
-                </button>
+            <div style="display:flex; flex-direction:column; gap:8px; align-items:center;">
+                <div style="display:flex; gap:8px; align-items:center;">
+                    <button id="backup-select-range-btn" class="menu_button" style="padding:5px 12px; font-size:12px;">
+                        📍 범위 선택
+                    </button>
+                    <div style="display:flex; gap:5px; align-items:center; background:var(--SmartThemeBlurTintColor); padding:4px 8px; border-radius:5px; border:1px solid var(--SmartThemeBorderColor);">
+                        <input type="number" id="backup-range-start" placeholder="시작" style="width:50px; padding:4px; border-radius:4px; border:1px solid var(--SmartThemeBorderColor); background:var(--SmartThemeBodyColor); color:var(--SmartThemeBlurTintColor); text-align:center;">
+                        <span style="opacity:0.6;">~</span>
+                        <input type="number" id="backup-range-end" placeholder="끝" style="width:50px; padding:4px; border-radius:4px; border:1px solid var(--SmartThemeBorderColor); background:var(--SmartThemeBodyColor); color:var(--SmartThemeBlurTintColor); text-align:center;">
+                    </div>
+                    <button id="backup-apply-range-btn" class="menu_button" style="padding:5px 12px; font-size:12px;">
+                        ✓ 적용
+                    </button>
+                </div>
+                <small style="opacity:0.5; font-size:11px;">💡 Shift+클릭 또는 인덱스 직접 입력</small>
             </div>
-            <small style="text-align:center; opacity:0.7;">💡 Shift+클릭으로 범위 선택 가능 / 인덱스 직접 입력도 가능</small>
             
             <div style="max-height:300px; overflow-y:auto; border:1px solid var(--SmartThemeBorderColor); border-radius:5px; padding:10px; background:var(--SmartThemeBlurTintColor);">
                 <label style="display:flex; align-items:center; gap:8px; padding:5px; cursor:pointer; border-bottom:1px solid var(--SmartThemeBorderColor); margin-bottom:10px;">
