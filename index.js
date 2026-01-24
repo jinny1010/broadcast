@@ -400,17 +400,13 @@ async function openBackupModal() {
             
             <div style="display:flex; flex-direction:column; gap:8px; align-items:center;">
                 <div style="display:flex; gap:8px; align-items:center;">
-                    <button id="backup-select-range-btn" class="menu_button" style="padding:5px 12px; font-size:12px;">
-                        📍 범위 선택
-                    </button>
+                    <button id="backup-select-range-btn" class="menu_button" style="padding:5px 12px; font-size:12px; white-space:nowrap;">📍 범위 선택</button>
                     <div style="display:flex; gap:5px; align-items:center; background:var(--SmartThemeBlurTintColor); padding:4px 8px; border-radius:5px; border:1px solid var(--SmartThemeBorderColor);">
                         <input type="number" id="backup-range-start" placeholder="시작" style="width:50px; padding:4px; border-radius:4px; border:1px solid var(--SmartThemeBorderColor); background:var(--SmartThemeBodyColor); color:var(--SmartThemeBlurTintColor); text-align:center;">
                         <span style="opacity:0.6;">~</span>
                         <input type="number" id="backup-range-end" placeholder="끝" style="width:50px; padding:4px; border-radius:4px; border:1px solid var(--SmartThemeBorderColor); background:var(--SmartThemeBodyColor); color:var(--SmartThemeBlurTintColor); text-align:center;">
                     </div>
-                    <button id="backup-apply-range-btn" class="menu_button" style="padding:5px 12px; font-size:12px;">
-                        ✓ 적용
-                    </button>
+                    <button id="backup-apply-range-btn" class="menu_button" style="padding:5px 12px; font-size:12px; white-space:nowrap;">✓ 적용</button>
                 </div>
                 <small style="opacity:0.5; font-size:11px;">💡 Shift+클릭 또는 인덱스 직접 입력</small>
             </div>
