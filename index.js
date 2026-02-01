@@ -704,15 +704,22 @@ async function copyMessagesToNewFile(indices, newFileName, currentFileId, delete
         await sleep(2000);
         await waitForChatLoad();
         
-        // 2. 이름 변경 (입력된 경우)
-        if (newFileName) {
-            await executeSlashCommands(`/rename chat="${newFileName}"`);
-            await sleep(500);
-        }
-        
         // 새 파일 ID 가져오기
         const currentCharId = ctx.characterId;
-        const newFileId = removeJsonlExtension(ctx.characters[currentCharId].chat);
+        const currentCharacter = ctx.characters[currentCharId];
+        let newFileId = removeJsonlExtension(currentCharacter.chat);
+        
+        // 2. 이름 변경 (입력된 경우)
+        if (newFileName) {
+            try {
+                await executeSlashCommands(`/renamechat ${newFileName.trim()}`);
+                newFileId = newFileName.trim();
+                console.log('[Broadcast] Chat renamed to:', newFileName);
+                await sleep(500);
+            } catch (renameError) {
+                console.warn('[Broadcast] Rename error:', renameError);
+            }
+        }
         
         console.log('[Broadcast] New chat created with ID:', newFileId);
         
