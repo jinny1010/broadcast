@@ -730,15 +730,16 @@ async function copyMessagesToNewFile(indices, newFileName, currentFileId, delete
         await ctx.reloadCurrentChat();
         await sleep(500);
         
-        console.log('[Broadcast] Messages added to new chat, switching back to:', currentFileId);
-        
-        // 5. 원본 파일로 돌아가기
-        await ctx.openCharacterChat(currentFileId);
-        await sleep(2000);
-        await waitForChatLoad();
-        
-        // 6. 원본에서 삭제 (옵션)
+        // 5. 원본에서 삭제가 필요한 경우에만 원본으로 이동
         if (deleteOriginal) {
+            console.log('[Broadcast] Deleting original messages, switching to:', currentFileId);
+            
+            // 원본 파일로 이동
+            await ctx.openCharacterChat(currentFileId);
+            await sleep(2000);
+            await waitForChatLoad();
+            
+            // 원본에서 삭제
             const currentChatNow = ctx.chat;
             // 역순으로 삭제 (인덱스 밀림 방지)
             for (const index of [...indices].sort((a, b) => b - a)) {
@@ -748,6 +749,13 @@ async function copyMessagesToNewFile(indices, newFileName, currentFileId, delete
             }
             await ctx.saveChat();
             await ctx.reloadCurrentChat();
+            await sleep(500);
+            
+            // 다시 새 파일로 돌아가기
+            console.log('[Broadcast] Returning to new file:', newFileId);
+            await ctx.openCharacterChat(newFileId);
+            await sleep(2000);
+            await waitForChatLoad();
         }
         
         const action = deleteOriginal ? '이동' : '복사';
